@@ -1,0 +1,48 @@
+[package]
+name = "sjtu-canvas-engine"
+version = "1.0.0"
+edition = "2024"
+description = "SJTU Canvas Downloader engine, driven by the Windows and macOS apps over stdio JSON-RPC"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+futures-util = "0.3"
+rand = "0.9"
+scraper = "0.24"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+unicode-normalization = "0.1"
+url = "2"
+urlencoding = "2"
+uuid = { version = "1", features = ["v4"] }
+
+# The SJTU services were verified with SChannel on Windows and rustls elsewhere.
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["brotli", "cookies", "deflate", "gzip", "json", "multipart", "native-tls", "socks", "stream", "system-proxy"] }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["brotli", "cookies", "deflate", "gzip", "json", "multipart", "rustls-tls", "socks", "stream", "system-proxy"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+
+[dev-dependencies]
+axum = "0.8"
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

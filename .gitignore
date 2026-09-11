@@ -1,9 +1,27 @@
-/target/
-/frontend/node_modules/
-/frontend/dist/
-/data/
-/.env
-/secrets/
+# Local toolchains, caches and scratch data
+.dev/
+data/
+tmp/
 *.log
-.DS_Store
 
+# Engine
+engine/target/
+
+# Python caches (engine test helpers)
+__pycache__/
+*.pyc
+
+# Windows app
+apps/windows/**/bin/
+apps/windows/**/obj/
+apps/windows/**/AppPackages/
+apps/windows/**/*.user
+apps/windows/.vs/
+apps/windows/dist/
+
+# macOS app
+apps/macos/.build/
+apps/macos/.swiftpm/
+apps/macos/dist/
+apps/macos/**/*.xcodeproj/xcuserdata/
+.DS_Store

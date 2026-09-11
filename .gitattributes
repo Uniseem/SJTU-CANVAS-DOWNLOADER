@@ -1,0 +1,6 @@
+# Shell scripts run on macOS; keep them LF even in Windows checkouts.
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.ico binary
+*.icns binary

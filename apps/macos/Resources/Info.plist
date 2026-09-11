@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+	</array>
+	<key>CFBundleName</key>
+	<string>SJTU Canvas Downloader</string>
+	<key>CFBundleDisplayName</key>
+	<string>SJTU Canvas Downloader</string>
+	<key>CFBundleExecutable</key>
+	<string>SJTUCanvasDownloader</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.uniseem.sjtu-canvas-downloader</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__BUILD__</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.education</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 SJTU Canvas Downloader contributors · MIT License</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>SJTU Canvas Downloader 需要把课堂录像和课程文件保存到你选择的文件夹。</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>SJTU Canvas Downloader 需要把课堂录像和课程文件保存到你选择的文件夹。</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>SJTU Canvas Downloader 需要把课堂录像和课程文件保存到“下载”文件夹。</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>SJTU Canvas Downloader 需要把课堂录像和课程文件保存到你选择的外置磁盘。</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>SJTU Canvas Downloader 需要把课堂录像和课程文件保存到你选择的网络磁盘。</string>
+</dict>
+</plist>

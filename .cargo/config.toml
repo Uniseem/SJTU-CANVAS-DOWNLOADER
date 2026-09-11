@@ -1,0 +1,9 @@
+# The engine links the C runtime statically on Windows, so it starts on a
+# clean PC without the Visual C++ Redistributable ("VCRUNTIME140.dll was not
+# found"). Cargo reads this file from the working directory upwards, so it
+# applies both in engine/ and with --manifest-path from the repository root.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
