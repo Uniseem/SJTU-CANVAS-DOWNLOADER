@@ -32,7 +32,11 @@ SJTU Canvas Downloader 是 Windows 与 macOS 上的上海交通大学 Canvas 下
 curl -fsSL https://raw.githubusercontent.com/Uniseem/SJTU-CANVAS-DOWNLOADER/main/install.sh | bash
 ```
 
-脚本会按这台 Mac 的芯片（Apple 芯片或 Intel）下载最新版的安装包，校验 SHA-256，再用 macOS 自带的安装器装进“应用程序”文件夹（需要输入这台 Mac 的登录密码），装好后自动打开。用这种方式安装不会出现“无法验证开发者”之类的提示。以后再运行同一条命令就会更新到最新版，下载记录和设置保留。想安装某个版本时，在 `bash` 前加上版本号，例如 `curl -fsSL …/install.sh | SJTU_CANVAS_VERSION=v1.0.0 bash`。
+脚本会按这台 Mac 的芯片（Apple 芯片或 Intel）下载最新版的安装包，校验 SHA-256，再用 macOS 自带的安装器装进“应用程序”文件夹（需要输入这台 Mac 的登录密码），装好后自动打开。用这种方式安装不会出现“无法验证开发者”之类的提示。以后再运行同一条命令就会更新到最新版，下载记录和设置保留。想安装某个版本时，在 `bash` 前加上版本号：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Uniseem/SJTU-CANVAS-DOWNLOADER/main/install.sh | SJTU_CANVAS_VERSION=v1.0.0 bash
+```
 
 也可以手动下载 `SJTUCanvasDownloader-macos-arm64.pkg`（Apple 芯片）或 `SJTUCanvasDownloader-macos-x86_64.pkg`（Intel 芯片）双击安装；下错了架构，安装器会直接提示该下载哪一个。经过 Apple 公证的安装包可以直接打开，**未公证的安装包**第一次打开时 macOS 会提示“无法验证开发者”（macOS 15 显示“未打开”），手动允许一次即可：
 
