@@ -1,0 +1,23 @@
+[Unit]
+Description=Canvas Pocket Web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=canvas-pocket
+Group=canvas-pocket
+WorkingDirectory=/opt/canvas-pocket
+EnvironmentFile=/etc/canvas-pocket.env
+ExecStart=/opt/canvas-pocket/canvas-pocket-server
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/canvas-pocket
+
+[Install]
+WantedBy=multi-user.target
+

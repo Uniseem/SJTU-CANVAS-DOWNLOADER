@@ -1,0 +1,13 @@
+{$DOMAIN} {
+    encode zstd gzip
+
+    reverse_proxy canvas-pocket:8080 {
+        flush_interval -1
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        -Server
+    }
+}
+

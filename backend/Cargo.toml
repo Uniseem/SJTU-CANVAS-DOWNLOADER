@@ -1,0 +1,45 @@
+[package]
+name = "canvas-pocket-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0"
+async-stream = "0.3"
+axum = { version = "0.8", features = ["macros"] }
+base64 = "0.22"
+bytes = "1.10"
+chacha20poly1305 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6.1"
+futures-util = "0.3"
+http-body-util = "0.1"
+rand = "0.9"
+scraper = "0.24"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.47", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = "0.7"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["compression-full", "fs", "request-id", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2.5"
+urlencoding = "2.1"
+uuid = { version = "1.18", features = ["serde", "v4"] }
+
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["brotli", "cookies", "deflate", "gzip", "json", "multipart", "native-tls", "stream", "system-proxy"] }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["brotli", "cookies", "deflate", "gzip", "json", "multipart", "rustls-tls", "stream"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+
+[dev-dependencies]
+tempfile = "3.20"
+tower = { version = "0.5", features = ["util"] }
