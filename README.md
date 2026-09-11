@@ -16,30 +16,38 @@ SJTU Canvas Downloader 是 Windows 与 macOS 上的上海交通大学 Canvas 下
 | --- | --- | --- |
 | 系统 | Windows 10 2004（19041）或更高版本，x64 | macOS 14 Sonoma 或更高版本，Apple 芯片或 Intel |
 | 其他 | 无需另装 .NET、Windows App SDK 或 Visual C++ 运行库 | — |
-| 磁盘 | 应用约 240 MB，另需下载文件的空间 | 应用约 20 MB，另需下载文件的空间 |
+| 磁盘 | 安装后约 240 MB，另需下载文件的空间 | 应用约 20 MB，另需下载文件的空间 |
 
 需要能访问 Canvas（`oc.sjtu.edu.cn`）、jAccount 和学校的课堂视频服务。
 
 ## 安装
 
-目前还没有正式发行版：可以从仓库 [Actions](https://github.com/Uniseem/SJTU-CANVAS-DOWNLOADER/actions/workflows/desktop.yml) 中最近一次成功构建的产物（Artifacts）下载，或按下文[从源码构建](#构建)。Windows 用 `SJTUCanvasDownloader-win-x64.zip`，Mac 用 `SJTUCanvasDownloader-macos-arm64.pkg`（Apple 芯片）或 `SJTUCanvasDownloader-macos-x86_64.pkg`（Intel 芯片）。
+安装包在 [Releases](https://github.com/Uniseem/SJTU-CANVAS-DOWNLOADER/releases/latest) 中。
 
-### Windows
+### macOS：终端一键安装
 
-解压 `SJTUCanvasDownloader-win-x64.zip`，运行其中的 `SJTUCanvasDownloader.exe`。不需要管理员权限，可以放在任何文件夹，包括含中文的路径。
+打开“终端”，粘贴并运行：
 
-没有代码签名的构建第一次运行时，Windows 可能显示“Windows 已保护你的电脑”：点“更多信息 → 仍要运行”即可，之后不再询问。
+```bash
+curl -fsSL https://raw.githubusercontent.com/Uniseem/SJTU-CANVAS-DOWNLOADER/main/install.sh | bash
+```
 
-### macOS
+脚本会按这台 Mac 的芯片（Apple 芯片或 Intel）下载最新版的安装包，校验 SHA-256，再用 macOS 自带的安装器装进“应用程序”文件夹（需要输入这台 Mac 的登录密码），装好后自动打开。用这种方式安装不会出现“无法验证开发者”之类的提示。以后再运行同一条命令就会更新到最新版，下载记录和设置保留。想安装某个版本时，在 `bash` 前加上版本号，例如 `curl -fsSL …/install.sh | SJTU_CANVAS_VERSION=v1.0.0 bash`。
 
-双击 `SJTUCanvasDownloader-macos-<架构>.pkg`，按提示安装到“应用程序”文件夹。下错了架构，安装器会直接提示该下载哪一个。
-
-经过 Apple 公证的安装包可以直接打开。**未公证的安装包**第一次打开时，macOS 会提示“无法验证开发者”（macOS 15 显示“未打开”）——这是 macOS 对所有未公证软件的统一提示，手动允许一次即可：
+也可以手动下载 `SJTUCanvasDownloader-macos-arm64.pkg`（Apple 芯片）或 `SJTUCanvasDownloader-macos-x86_64.pkg`（Intel 芯片）双击安装；下错了架构，安装器会直接提示该下载哪一个。经过 Apple 公证的安装包可以直接打开，**未公证的安装包**第一次打开时 macOS 会提示“无法验证开发者”（macOS 15 显示“未打开”），手动允许一次即可：
 
 - macOS 15 及以后：双击安装包，在提示中点“完成”；打开“系统设置 → 隐私与安全性”，在页面下方点“仍要打开”并输入登录密码，再点“打开”。
 - macOS 14：按住 Control 点按安装包，选“打开”，再点“打开”。
 
-之后安装器会把 SJTU Canvas Downloader 放进“应用程序”文件夹。由安装器安装的应用不带下载隔离标记，打开时不会再有任何提示，也不会出现“已损坏”之类的错误。更新到新版本后，如果系统询问是否允许应用使用钥匙串中的“SJTU Canvas Downloader 登录密钥”，请选择“始终允许”。
+由安装器安装的应用不带下载隔离标记，打开时不会再有任何提示，也不会出现“已损坏”之类的错误。更新到新版本后，如果系统询问是否允许应用使用钥匙串中的“SJTU Canvas Downloader 登录密钥”，请选择“始终允许”。
+
+### Windows：安装程序
+
+下载并运行 `SJTUCanvasDownloader-win-x64-setup.exe`，按提示完成安装，可以选择创建桌面快捷方式，装好后可以直接打开。安装程序只为当前用户安装，不需要管理员权限，也不需要另装 .NET；默认位置是 `%LOCALAPPDATA%\Programs\SJTU Canvas Downloader`，也可以换到其他文件夹（包括含中文的路径）。
+
+- 更新：运行新版本的安装程序即可，它会先关闭正在运行的应用；下载记录、设置和登录状态保留，未完成的下载在下次打开时继续。
+- 卸载：“设置 → 应用 → 已安装的应用”中找到 SJTU Canvas Downloader。卸载会删除应用本身，不删除已下载的文件和应用数据（见下文[数据保存在哪里](#数据保存在哪里)）。
+- 没有代码签名的安装程序第一次运行时，Windows 可能显示“Windows 已保护你的电脑”：点“更多信息 → 仍要运行”即可。
 
 ## 使用
 
@@ -77,6 +85,7 @@ SJTU Canvas/
 
 | | Windows | macOS |
 | --- | --- | --- |
+| 应用本身 | `%LOCALAPPDATA%\Programs\SJTU Canvas Downloader`（默认） | `/Applications/SJTU Canvas Downloader.app` |
 | 应用数据 | `%LOCALAPPDATA%\SJTU Canvas Downloader` | `~/Library/Application Support/SJTU Canvas Downloader` |
 | 登录密钥 | Windows 凭据管理器（`SJTU Canvas Downloader/session-key`） | 钥匙串（服务 `SJTU Canvas Downloader`，账户 `session-key`） |
 
@@ -107,19 +116,19 @@ Canvas 接口返回 401 时，引擎会先用个人信息接口复核登录（�
 
 ### Windows
 
-需要 Rust（MSVC 工具链）、.NET 10 SDK 和 Python 3（构建时的 DLL 检查）。在 PowerShell 中：
+需要 Rust（MSVC 工具链）、.NET 10 SDK、Python 3（构建时的 DLL 检查）和 [Inno Setup 7](https://jrsoftware.org/isinfo.php)（生成安装程序）。在 PowerShell 中：
 
 ```powershell
-./apps/windows/build.ps1 -Zip
+./apps/windows/build.ps1 -Installer
 ```
 
-产物是 `apps/windows/dist/SJTUCanvasDownloader/SJTUCanvasDownloader.exe`（自包含，无需安装 .NET），`-Zip` 另外生成 `SJTUCanvasDownloader-win-x64.zip`。脚本会：
+产物是 `apps/windows/dist/SJTUCanvasDownloader/SJTUCanvasDownloader.exe`（自包含，无需安装 .NET），`-Installer` 另外生成安装程序 `SJTUCanvasDownloader-win-x64-setup.exe`（`apps/windows/installer/SJTUCanvasDownloader.iss`：只为当前用户安装、简体中文界面、升级时关闭正在运行的应用）；`-Zip` 生成免安装的 zip，用于测试。脚本会：
 
 - 以静态 C 运行库链接引擎，自包含发布 .NET 与 Windows App SDK；
 - 检查应用和引擎中每个 `.exe/.dll` 的依赖都能在干净的 Windows 上找到（`apps/windows/tools/check-dlls.py`），否则构建失败；
-- 可选地用 Authenticode 签名所有未签名的二进制文件：`-SignPfx 证书.pfx`（密码放在 `SJTU_CANVAS_SIGN_PASSWORD`）或 `-SignThumbprint <证书指纹>`，使用 RFC 3161 时间戳。
+- 可选地用 Authenticode 签名所有未签名的二进制文件、安装程序和卸载程序：`-SignPfx 证书.pfx`（密码放在 `SJTU_CANVAS_SIGN_PASSWORD`）或 `-SignThumbprint <证书指纹>`，使用 RFC 3161 时间戳。
 
-`-Arch arm64` 构建 ARM64 版（需要 Rust 的 `aarch64-pc-windows-msvc` 目标和 ARM64 生成工具）。
+ISCC.exe 从 `PATH`、`SJTU_CANVAS_ISCC`、仓库的 `.dev\innosetup` 或 Program Files 中查找。`-Arch arm64` 构建 ARM64 版（需要 Rust 的 `aarch64-pc-windows-msvc` 目标和 ARM64 生成工具）。
 
 ### macOS
 
@@ -141,7 +150,9 @@ bash apps/macos/build.sh --pkg
       --installer-sign "Developer ID Installer: 姓名 (团队 ID)" --notarize sjtu-canvas --pkg --dmg
   ```
 
-`.github/workflows/desktop.yml` 在 macOS（arm64 与 x86_64）和 Windows 上运行引擎测试并构建两个应用；配置了签名相关的仓库机密时自动签名和公证，没有时 macOS 只生成未签名的安装包，Windows 生成未签名的 zip。发布新版本时，同时修改 `engine/Cargo.toml` 与 `apps/windows/SJTUCanvasDownloader/SJTUCanvasDownloader.csproj` 中的版本号。
+`.github/workflows/desktop.yml` 在 macOS（arm64 与 x86_64）和 Windows 上运行引擎测试，构建两个应用，并在干净的 CI 机器上试装：macOS 用安装包装进“应用程序”并启动，Windows 静默安装再卸载。配置了签名相关的仓库机密时自动签名和公证，没有时生成未签名的安装包和安装程序。
+
+发布新版本：先把 `engine/Cargo.toml` 与 `apps/windows/SJTUCanvasDownloader/SJTUCanvasDownloader.csproj` 中的版本号改成新版本，再推送同名标签（例如 `git tag v1.0.1 && git push origin v1.0.1`）。CI 会在该提交上构建三个安装包，生成 `SHA256SUMS.txt`，并以 `.github/release-notes.md` 为说明创建 GitHub Release；标签与版本号不一致时不会发布。终端一键安装脚本 `install.sh` 总是安装最新的 Release。
 
 ## 架构
 

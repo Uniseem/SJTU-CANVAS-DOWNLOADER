@@ -3,6 +3,7 @@ name: Desktop apps
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -14,13 +15,16 @@ concurrency:
   cancel-in-progress: true
 
 # Signing is optional. Without these secrets macOS gets an unsigned installer
-# package (the user allows it once in System Settings; the installed app then
-# opens directly) and Windows an unsigned zip.
+# package (installed from Terminal with install.sh, or allowed once in System
+# Settings) and Windows an unsigned installer.
 #   macOS:   MACOS_CERTIFICATE_P12 (base64 of a .p12 with the Developer ID
 #            Application and Developer ID Installer certificates),
 #            MACOS_CERTIFICATE_PASSWORD, MACOS_SIGN_IDENTITY, MACOS_INSTALLER_IDENTITY,
 #            APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (for notarization)
 #   Windows: WINDOWS_CERTIFICATE_PFX (base64), WINDOWS_CERTIFICATE_PASSWORD
+#
+# A pushed tag vX.Y.Z (matching engine/Cargo.toml and the Windows project)
+# publishes a GitHub Release with the installers and SHA256SUMS.txt.
 
 jobs:
   macos:
@@ -92,6 +96,21 @@ jobs:
           else
             bash apps/macos/build.sh --arch ${{ matrix.arch }} --pkg
           fi
+      - name: Install the package and start the app
+        run: |
+          sudo installer -pkg "apps/macos/dist/SJTUCanvasDownloader-macos-${{ matrix.arch }}.pkg" -target /
+          app="/Applications/SJTU Canvas Downloader.app"
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/sjtu-canvas-engine" --version
+          open "$app"
+          # The app starts its engine; both must be running.
+          for _ in $(seq 1 60); do
+            if pgrep -x sjtu-canvas-engine >/dev/null; then break; fi
+            sleep 1
+          done
+          pgrep -x SJTUCanvasDownloader
+          pgrep -x sjtu-canvas-engine
+          osascript -e 'quit app "SJTU Canvas Downloader"' || true
       - uses: actions/upload-artifact@v4
         with:
           name: SJTUCanvasDownloader-macos-${{ matrix.arch }}
@@ -117,6 +136,17 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      - name: Inno Setup 7.1.0
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "innosetup-7.1.0-x64.exe"
+          Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe" -OutFile $installer
+          $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
+          if ($hash -ne "0362A383ED217D4C4239B5933866DD96D3EB2102737DA92F80F6057A4B40DF2F") { throw "Inno Setup checksum mismatch: $hash" }
+          $dir = Join-Path $env:RUNNER_TEMP "innosetup"
+          Start-Process $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/PORTABLE=1", "/DIR=$dir" -Wait
+          if (-not (Test-Path "$dir\ISCC.exe")) { throw "ISCC.exe missing" }
+          "SJTU_CANVAS_ISCC=$dir\ISCC.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Engine tests
         run: cargo test --locked --manifest-path engine/Cargo.toml
       - name: Signing certificate
@@ -128,9 +158,53 @@ jobs:
           "SJTU_CANVAS_SIGN_PFX=$pfx" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
       - name: Build SJTU Canvas Downloader
         shell: pwsh
-        run: ./apps/windows/build.ps1 -Zip
+        run: ./apps/windows/build.ps1 -Installer
+      - name: Install silently and uninstall
+        shell: pwsh
+        run: |
+          $setup = "apps/windows/dist/SJTUCanvasDownloader-win-x64-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "installed"
+          Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=$dir" -Wait
+          foreach ($file in "SJTUCanvasDownloader.exe", "engine\sjtu-canvas-engine.exe", "unins000.exe") {
+            if (-not (Test-Path (Join-Path $dir $file))) { throw "missing after install: $file" }
+          }
+          & (Join-Path $dir "engine\sjtu-canvas-engine.exe") --version
+          Start-Process (Join-Path $dir "unins000.exe") -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path (Join-Path $dir "SJTUCanvasDownloader.exe")) { throw "the uninstaller left the app behind" }
       - uses: actions/upload-artifact@v4
         with:
           name: SJTUCanvasDownloader-win-x64
-          path: apps/windows/dist/SJTUCanvasDownloader-win-x64.zip
+          path: apps/windows/dist/SJTUCanvasDownloader-win-x64-setup.exe
           if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          engine="$(sed -n 's/^version = "\(.*\)"$/\1/p' engine/Cargo.toml | head -n 1)"
+          windows="$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' apps/windows/SJTUCanvasDownloader/SJTUCanvasDownloader.csproj | head -n 1)"
+          echo "tag $tag, engine $engine, windows $windows"
+          [ "$tag" = "$engine" ] && [ "$tag" = "$windows" ]
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          ls -la
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" * --repo "$GITHUB_REPOSITORY" \
+            --title "SJTU Canvas Downloader ${GITHUB_REF_NAME#v}" --notes-file ../.github/release-notes.md

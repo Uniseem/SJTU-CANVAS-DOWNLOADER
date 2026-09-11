@@ -1,7 +1,8 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Builds the Windows app into apps\windows\dist\SJTUCanvasDownloader (and optionally a zip).
+  Builds the Windows app into apps\windows\dist\SJTUCanvasDownloader, and
+  optionally the installer (SJTUCanvasDownloader-win-<arch>-setup.exe) or a zip.
 
 .DESCRIPTION
   1. sjtu-canvas-engine (Rust, release, static C runtime)
@@ -16,19 +17,24 @@
        -SignPfx <file.pfx> with the password in SJTU_CANVAS_SIGN_PASSWORD
      (or SJTU_CANVAS_SIGN_THUMBPRINT / SJTU_CANVAS_SIGN_PFX), timestamped by
      -TimestampUrl (default http://timestamp.digicert.com).
+  6. -Installer: a per-user Inno Setup installer (no administrator rights),
+     signed together with its uninstaller when signing is configured.
+     -Zip: a zip of the app folder instead (for testing).
 
   Requirements: Rust (MSVC toolchain; for -Arch arm64 also the
   aarch64-pc-windows-msvc target and the ARM64 C++ build tools), .NET 10 SDK,
-  Python 3 for the DLL check. The .NET SDK is taken from PATH, or from
-  .dev\dotnet in the repository if present.
+  Python 3 for the DLL check, and Inno Setup 7 for -Installer (ISCC.exe on
+  PATH, in SJTU_CANVAS_ISCC, in .dev\innosetup or in Program Files). The .NET
+  SDK is taken from PATH, or from .dev\dotnet in the repository if present.
 
 .EXAMPLE
-  ./apps/windows/build.ps1 -Zip
+  ./apps/windows/build.ps1 -Installer
 .EXAMPLE
-  $env:SJTU_CANVAS_SIGN_PASSWORD = "..."; ./apps/windows/build.ps1 -Zip -SignPfx C:\keys\canvas.pfx
+  $env:SJTU_CANVAS_SIGN_PASSWORD = "..."; ./apps/windows/build.ps1 -Installer -SignPfx C:\keys\canvas.pfx
 #>
 param(
     [ValidateSet("x64", "arm64")] [string]$Arch = "x64",
+    [switch]$Installer,
     [switch]$Zip,
     [string]$SignThumbprint = $env:SJTU_CANVAS_SIGN_THUMBPRINT,
     [string]$SignPfx = $env:SJTU_CANVAS_SIGN_PFX,
@@ -39,6 +45,7 @@ $ErrorActionPreference = "Stop"
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $Dist = Join-Path $PSScriptRoot "dist"
 $App = Join-Path $Dist "SJTUCanvasDownloader"
+$Project = Join-Path $PSScriptRoot "SJTUCanvasDownloader\SJTUCanvasDownloader.csproj"
 $RustTarget = if ($Arch -eq "arm64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
 $Platform = if ($Arch -eq "arm64") { "ARM64" } else { "x64" }
 
@@ -64,6 +71,21 @@ function Find-SignTool {
     throw "signtool.exe not found; install the Windows SDK."
 }
 
+function Find-Iscc {
+    $candidates = @($env:SJTU_CANVAS_ISCC)
+    $onPath = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($onPath) { $candidates += $onPath.Source }
+    $candidates += Join-Path $Repo ".dev\innosetup\ISCC.exe"
+    foreach ($version in "7", "6") {
+        $candidates += Join-Path ${env:ProgramFiles(x86)} "Inno Setup $version\ISCC.exe"
+        $candidates += Join-Path $env:ProgramFiles "Inno Setup $version\ISCC.exe"
+        $candidates += Join-Path $env:LOCALAPPDATA "Programs\Inno Setup $version\ISCC.exe"
+    }
+    $found = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if (-not $found) { throw "ISCC.exe (Inno Setup 7) not found; install Inno Setup or set SJTU_CANVAS_ISCC." }
+    return $found
+}
+
 function Find-Python {
     foreach ($name in "python", "python3", "py") {
         $command = Get-Command $name -ErrorAction SilentlyContinue
@@ -80,6 +102,9 @@ if (Test-Path (Join-Path $localDotnet "dotnet.exe")) {
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = "1"
 $env:DOTNET_NOLOGO = "1"
 
+$Version = ([xml](Get-Content $Project -Raw -Encoding UTF8)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+if (-not $Version) { throw "No <Version> in $Project" }
+
 Write-Host "==> Engine (release, $RustTarget)"
 # Run from the repository so .cargo\config.toml (static C runtime) applies.
 Push-Location $Repo
@@ -88,10 +113,10 @@ try {
 } finally { Pop-Location }
 $engineExe = Join-Path $Repo "engine\target\$RustTarget\release\sjtu-canvas-engine.exe"
 
-Write-Host "==> WinUI app (win-$Arch)"
+Write-Host "==> WinUI app $Version (win-$Arch)"
 if (Test-Path $App) { Remove-Item -Recurse -Force $App }
 Invoke-Native "dotnet publish" {
-    dotnet publish (Join-Path $PSScriptRoot "SJTUCanvasDownloader\SJTUCanvasDownloader.csproj") -c Release -r "win-$Arch" "-p:Platform=$Platform" --self-contained -o $App
+    dotnet publish $Project -c Release -r "win-$Arch" "-p:Platform=$Platform" --self-contained -o $App
 }
 
 Write-Host "==> Layout"
@@ -110,11 +135,10 @@ if ($python) {
     Write-Warning "Python not found; skipped the DLL import check."
 }
 
+$signArgs = $null
 if ($SignThumbprint -or $SignPfx) {
     Write-Host "==> Authenticode signing"
     $signtool = Find-SignTool
-    $unsigned = Get-ChildItem $App -Recurse -File -Include *.exe, *.dll |
-        Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -eq "NotSigned" }
     $signArgs = @("sign", "/fd", "sha256", "/tr", $TimestampUrl, "/td", "sha256")
     if ($SignPfx) {
         $signArgs += @("/f", $SignPfx)
@@ -122,12 +146,36 @@ if ($SignThumbprint -or $SignPfx) {
     } else {
         $signArgs += @("/sha1", $SignThumbprint)
     }
+    $unsigned = Get-ChildItem $App -Recurse -File -Include *.exe, *.dll |
+        Where-Object { (Get-AuthenticodeSignature $_.FullName).Status -eq "NotSigned" }
     Write-Host ("Signing {0} files" -f $unsigned.Count)
     for ($index = 0; $index -lt $unsigned.Count; $index += 40) {
         $batch = @($unsigned[$index..([Math]::Min($index + 39, $unsigned.Count - 1))] | ForEach-Object FullName)
         Invoke-Native "signtool sign" { & $signtool @signArgs @batch }
     }
     Invoke-Native "signtool verify" { & $signtool verify /pa /q (Join-Path $App "SJTUCanvasDownloader.exe") (Join-Path $engineDir "sjtu-canvas-engine.exe") }
+}
+
+if ($Installer) {
+    $iscc = Find-Iscc
+    $setup = Join-Path $Dist "SJTUCanvasDownloader-win-$Arch-setup.exe"
+    if (Test-Path $setup) { Remove-Item -Force $setup }
+    Write-Host "==> $setup (Inno Setup: $iscc)"
+    $isccArgs = @("/Q", "/DSourceDir=$App", "/DAppVersion=$Version", "/DArch=$Arch", "/DOutputDir=$Dist")
+    if ($signArgs) {
+        # Inno Setup signs the installer and its uninstaller with this command;
+        # $q stands for a quote and $f for the file, so no literal quotes have
+        # to survive the command line.
+        $quote = { param($value) if ($value -match '\s') { '$q' + $value + '$q' } else { $value } }
+        $command = ((@($signtool) + $signArgs) | ForEach-Object { & $quote $_ }) -join " "
+        $isccArgs += @("/DSign=1", ('/Ssjtucanvas=' + $command + ' $f'))
+    }
+    Invoke-Native "ISCC" { & $iscc @isccArgs (Join-Path $PSScriptRoot "installer\SJTUCanvasDownloader.iss") }
+    if (-not (Test-Path $setup)) { throw "The installer was not created: $setup" }
+    if ($signArgs) {
+        Invoke-Native "signtool verify" { & $signtool verify /pa /q $setup }
+    }
+    Write-Host ("Installer: {0} ({1:N0} MB)" -f $setup, ((Get-Item $setup).Length / 1MB))
 }
 
 if ($Zip) {

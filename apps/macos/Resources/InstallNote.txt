@@ -1,7 +1,13 @@
 SJTU Canvas Downloader for macOS 安装说明
 =========================================
 
-推荐使用安装包 SJTUCanvasDownloader-macos-<架构>.pkg：按下面的步骤允许一次，
+最简单的方法：打开“终端”，粘贴并运行下面这一行。它会下载适合这台 Mac 的
+安装包、校验后安装到“应用程序”文件夹（需要输入登录密码），不会出现任何
+“无法验证开发者”的提示；以后再运行一次就会更新到最新版。
+
+  curl -fsSL https://raw.githubusercontent.com/Uniseem/SJTU-CANVAS-DOWNLOADER/main/install.sh | bash
+
+也可以使用安装包 SJTUCanvasDownloader-macos-<架构>.pkg：按下面的步骤允许一次，
 安装器会把 SJTU Canvas Downloader 放进“应用程序”文件夹，之后打开应用不需要
 再确认。Apple 芯片的 Mac 请用 arm64 版，Intel 芯片的 Mac 请用 x86_64 版。
 需要 macOS 14 或更新版本。
