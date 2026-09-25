@@ -72,7 +72,7 @@ npm run dist:win       # Windows：dist/SJTUCanvasDownloader-win-x64-setup.exe
 npm run dist:mac       # macOS：dist/SJTUCanvasDownloader-macos-<arm64|x86_64>.zip
 ```
 
-`.github/workflows/desktop.yml` 在 GitHub Actions 上构建两个平台，推送 `vX.Y.Z` 标签（与 `apps/desktop/package.json` 和 `engine/Cargo.toml` 的版本一致）会发布 Release。代码签名可选，见工作流文件开头的说明。
+`.github/workflows/desktop.yml` 在 GitHub Actions 上构建两个平台。发布 Release 有两种方式：推送 `vX.Y.Z` 标签（与 `apps/desktop/package.json` 和 `engine/Cargo.toml` 的版本一致），或者在 Actions 页面手动运行 “Desktop app” 并勾选 release，工作流会按 package.json 的版本自动打标签并发布。代码签名可选，见工作流文件开头的说明。
 
 ## 许可
 

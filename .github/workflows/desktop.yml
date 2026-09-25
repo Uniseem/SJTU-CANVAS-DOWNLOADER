@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub Release for the version in apps/desktop/package.json (creates the tag)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -23,7 +28,9 @@ concurrency:
 #   Windows: WINDOWS_CERTIFICATE_PFX (base64), WINDOWS_CERTIFICATE_PASSWORD
 #
 # A pushed tag vX.Y.Z (matching apps/desktop/package.json and engine/Cargo.toml)
-# publishes a GitHub Release with the installers and SHA256SUMS.txt.
+# publishes a GitHub Release with the installers and SHA256SUMS.txt. Running
+# the workflow by hand with "release" ticked does the same for the version in
+# package.json and creates the tag itself.
 
 env:
   NODE_VERSION: 22
@@ -199,7 +206,7 @@ jobs:
 
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
     needs: [macos, windows]
     runs-on: ubuntu-latest
     permissions:
@@ -208,11 +215,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Tag matches the version
         run: |
-          tag="${GITHUB_REF_NAME#v}"
           engine="$(sed -n 's/^version = "\(.*\)"$/\1/p' engine/Cargo.toml | head -n 1)"
           app="$(node -p "require('./apps/desktop/package.json').version")"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$app"
+          fi
           echo "tag $tag, engine $engine, app $app"
-          [ "$tag" = "$engine" ] && [ "$tag" = "$app" ]
+          [ "${tag#v}" = "$engine" ] && [ "${tag#v}" = "$app" ]
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           pattern: SJTUCanvasDownloader-*
@@ -226,5 +238,6 @@ jobs:
           ls -la
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          gh release create "$GITHUB_REF_NAME" * --repo "$GITHUB_REPOSITORY" \
-            --title "SJTU Canvas Downloader ${GITHUB_REF_NAME#v}" --notes-file ../.github/release-notes.md
+          # --target creates the tag at this commit when it does not exist yet.
+          gh release create "$RELEASE_TAG" * --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "SJTU Canvas Downloader ${RELEASE_TAG#v}" --notes-file ../.github/release-notes.md
