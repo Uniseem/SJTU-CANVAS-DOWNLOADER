@@ -15,7 +15,7 @@ export function EngineGate() {
 
   if (!engineState || engineState.status === 'starting') {
     return (
-      <div className="drag-region flex h-full flex-col items-center justify-center gap-4 text-muted">
+      <div className="flex flex-1 flex-col items-center justify-center gap-4 border-t border-border text-muted">
         <Spinner size="lg" color="accent" />
         <p className="text-sm">正在启动下载引擎…</p>
       </div>
@@ -23,8 +23,8 @@ export function EngineGate() {
   }
 
   return (
-    <div className="drag-region flex h-full items-center justify-center p-8">
-      <div className="no-drag w-full max-w-lg space-y-4">
+    <div className="flex flex-1 items-center justify-center border-t border-border p-8">
+      <div className="w-full max-w-lg space-y-4">
         <ErrorNotice title="下载引擎没有运行" message={engineState.error ?? '下载引擎已停止'} />
         <div className="flex gap-2">
           <Button

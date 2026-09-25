@@ -90,9 +90,13 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     title: APP_NAME,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0c0c0d' : '#ffffff',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
-    trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 18 } : undefined,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#131316' : '#f5f5f5',
+    // The renderer draws its own title bar (TitleBar.tsx). macOS keeps its
+    // traffic lights at the left; Windows draws its native buttons over the
+    // bar's right end, colored to match the theme (window:setTitleBarOverlay).
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : process.platform === 'win32' ? 'hidden' : 'default',
+    titleBarOverlay: process.platform === 'win32' ? titleBarOverlay(nativeTheme.shouldUseDarkColors) : undefined,
+    trafficLightPosition: process.platform === 'darwin' ? { x: 16, y: 14 } : undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -132,6 +136,14 @@ function createWindow(): void {
   } else {
     void window.loadFile(join(__dirname, '../renderer/index.html'));
   }
+}
+
+const TITLE_BAR_HEIGHT = 40;
+
+function titleBarOverlay(dark: boolean): Electron.TitleBarOverlay {
+  return dark
+    ? { color: '#29292b', symbolColor: '#e4e4e7', height: TITLE_BAR_HEIGHT }
+    : { color: '#f2f2f3', symbolColor: '#3f3f46', height: TITLE_BAR_HEIGHT };
 }
 
 function installMenu(): void {
@@ -215,6 +227,17 @@ function registerIpc(engine: EngineHost): void {
   ipcMain.handle('shell:showInFolder', (_event, path: unknown) => {
     if (typeof path === 'string') {
       shell.showItemInFolder(path);
+    }
+  });
+  ipcMain.handle('window:setTitleBarOverlay', (event, colors: unknown) => {
+    if (process.platform !== 'win32') {
+      return;
+    }
+    const window = BrowserWindow.fromWebContents(event.sender);
+    const { color, symbolColor } = (colors ?? {}) as { color?: unknown; symbolColor?: unknown };
+    const isHex = (value: unknown): value is string => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value);
+    if (window && !window.isDestroyed() && isHex(color) && isHex(symbolColor)) {
+      window.setTitleBarOverlay({ color, symbolColor, height: TITLE_BAR_HEIGHT });
     }
   });
   ipcMain.handle('shell:openExternal', (_event, url: unknown) => {

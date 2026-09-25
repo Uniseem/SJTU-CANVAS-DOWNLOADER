@@ -91,3 +91,4 @@ export const shell = {
 
 export const platform = window.canvas.platform;
 export const isMac = platform === 'darwin';
+export const isWindows = platform === 'win32';

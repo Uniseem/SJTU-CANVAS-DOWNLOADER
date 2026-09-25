@@ -256,4 +256,6 @@ export interface CanvasBridge {
   openPath(path: string): Promise<string>;
   showInFolder(path: string): Promise<void>;
   openExternal(url: string): Promise<void>;
+  /** Windows: the colors of the native window buttons drawn over the title bar. */
+  setTitleBarOverlay(colors: { color: string; symbolColor: string }): Promise<void>;
 }

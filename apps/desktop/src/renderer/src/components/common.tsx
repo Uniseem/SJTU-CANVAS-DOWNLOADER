@@ -17,7 +17,7 @@ export function PageHeader({
   className?: string;
 }) {
   return (
-    <header className={cn('flex shrink-0 items-start gap-3 px-8 pt-7 pb-4', className)}>
+    <header className={cn('flex shrink-0 items-start gap-3 px-8 pt-5 pb-4', className)}>
       {leading}
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-2xl font-semibold tracking-tight">{title}</h1>

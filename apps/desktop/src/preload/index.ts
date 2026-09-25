@@ -22,6 +22,7 @@ const bridge: CanvasBridge = {
   openPath: (path) => ipcRenderer.invoke('shell:openPath', path),
   showInFolder: (path) => ipcRenderer.invoke('shell:showInFolder', path),
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+  setTitleBarOverlay: (colors) => ipcRenderer.invoke('window:setTitleBarOverlay', colors),
 };
 
 contextBridge.exposeInMainWorld('canvas', bridge);

@@ -4,6 +4,7 @@ import { Toast } from '@heroui/react';
 
 import { EngineGate } from './components/EngineGate';
 import { Sidebar } from './components/Sidebar';
+import { reportTitleBarColors, TitleBar } from './components/TitleBar';
 import { CoursePage } from './pages/CoursePage';
 import { CoursesPage } from './pages/CoursesPage';
 import { DownloadsPage } from './pages/DownloadsPage';
@@ -17,6 +18,7 @@ function useSystemTheme(): void {
     const apply = (): void => {
       document.documentElement.classList.toggle('dark', media.matches);
       document.documentElement.classList.toggle('light', !media.matches);
+      reportTitleBarColors();
     };
     apply();
     media.addEventListener('change', apply);
@@ -52,17 +54,18 @@ export default function App() {
       body = <CoursesPage />;
     }
     content = (
-      <div className="flex h-full">
+      <>
         <Sidebar />
-        <main className="flex min-w-0 flex-1 flex-col">{body}</main>
-      </div>
+        <main className="flex min-w-0 flex-1 flex-col border-t border-border">{body}</main>
+      </>
     );
   }
 
   return (
-    <>
-      {content}
+    <div className="flex h-full flex-col">
+      <TitleBar />
+      <div className="flex min-h-0 flex-1">{content}</div>
       <Toast.Provider placement="bottom" />
-    </>
+    </div>
   );
 }

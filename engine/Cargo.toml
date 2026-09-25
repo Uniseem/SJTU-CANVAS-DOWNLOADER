@@ -1,6 +1,6 @@
 [package]
 name = "sjtu-canvas-engine"
-version = "2.0.2"
+version = "2.0.3"
 edition = "2024"
 description = "SJTU Canvas Downloader engine, driven by the desktop app over stdio JSON-RPC"
 license = "MIT"

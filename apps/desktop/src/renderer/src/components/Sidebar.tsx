@@ -2,7 +2,6 @@ import { Avatar, Chip, cn } from '@heroui/react';
 import { BookOpen, Download, Settings } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
-import { isMac } from '../api';
 import { countDownloads, useStore, type Page } from '../store';
 
 const ITEMS: { page: Page; label: string; icon: typeof BookOpen }[] = [
@@ -25,24 +24,8 @@ export function Sidebar() {
   const profile = account?.profile;
 
   return (
-    <aside
-      className={cn(
-        'drag-region flex w-56 shrink-0 flex-col border-r border-border bg-surface-secondary',
-        isMac ? 'pt-12' : 'pt-4',
-      )}
-    >
-      <div className="no-drag px-4 pb-3">
-        <div className="flex items-center gap-2 px-2">
-          <div className="flex size-8 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-            <Download size={16} />
-          </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold leading-tight">Canvas 下载器</div>
-            <div className="truncate text-[11px] text-muted">上海交通大学</div>
-          </div>
-        </div>
-      </div>
-      <nav className="no-drag flex flex-1 flex-col gap-1 px-3" aria-label="主导航">
+    <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface-secondary pt-2">
+      <nav className="flex flex-1 flex-col gap-1 px-3" aria-label="主导航">
         {ITEMS.map(({ page: target, label, icon: Icon }) => {
           const active = page === target;
           return (
@@ -78,7 +61,7 @@ export function Sidebar() {
         <button
           type="button"
           onClick={() => navigate('settings')}
-          className="no-drag m-3 flex items-center gap-3 rounded-xl px-3 py-2 text-left outline-none hover:bg-surface-tertiary focus-visible:ring-2 focus-visible:ring-focus"
+          className="m-3 flex items-center gap-3 rounded-xl px-3 py-2 text-left outline-none hover:bg-surface-tertiary focus-visible:ring-2 focus-visible:ring-focus"
           title="账户与设置"
         >
           <Avatar size="sm">

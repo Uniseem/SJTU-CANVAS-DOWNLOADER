@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Chip, Spinner } from '@heroui/react';
 import { RotateCw, X } from 'lucide-react';
 
-import { engine, errorMessage, isMac } from '../api';
+import { engine, errorMessage } from '../api';
 import { useStore } from '../store';
 
 const ACTIVE_STATES = new Set(['preparing', 'waiting', 'reconnecting', 'authorizing', 'authorized']);
@@ -53,8 +53,8 @@ export function LoginPage() {
   const ended = state === 'expired' || state === 'cancelled' || state === 'error';
 
   return (
-    <div className={`drag-region flex h-full flex-col items-center justify-center gap-6 px-8 ${isMac ? 'pt-6' : ''}`}>
-      <div className="no-drag flex w-full max-w-sm flex-col items-center gap-5 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-6 border-t border-border px-8">
+      <div className="flex w-full max-w-sm flex-col items-center gap-5 text-center">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">登录 Canvas</h1>
           <p className="mt-2 text-sm text-muted">打开「交我办」App，扫描下面的二维码并在手机上确认。</p>
