@@ -1,14 +1,21 @@
-//! Classroom recordings from the SJTU video platform (v.sjtu.edu.cn, the
-//! resource-management platform Canvas switched to in August 2026).
+//! Classroom recordings. Two school services hold them:
 //!
-//! Canvas opens the platform's LTI 1.3 tool through `jy-lti-adapter`. The
-//! launch ends on the platform's web UI with a `jwt_token`, which the engine
-//! keeps in memory and sends as the `jwt-token` header to the platform API
-//! (see `video/resource.rs`). The former canvas-sjtu API and the LTI 1.1
-//! "课堂视频旧版" player are gone; neither is tried any more.
+//! * the new video platform (v.sjtu.edu.cn, the resource-management platform
+//!   Canvas switched to in August 2026): Canvas opens its LTI 1.3 tool through
+//!   `jy-lti-adapter`, the launch ends on the platform's web UI with a
+//!   `jwt_token`, which the engine keeps in memory and sends as the
+//!   `jwt-token` header to the platform API (`video/resource.rs`);
+//! * the old player (“课堂视频旧版”, courses.sjtu.edu.cn, `video/historical.rs`):
+//!   recordings of lessons before the migration (`Config::old_platform_cutoff`)
+//!   were not carried over and are only playable there.
+//!
+//! A course's list is the new platform's lessons from the cutoff day on plus
+//! the old player's lessons before it. Every lesson remembers its `source`,
+//! and downloads resolve their media through that service.
 
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use chrono::NaiveDate;
 use dashmap::DashMap;
 use reqwest::{Client, StatusCode, cookie::Jar, header, redirect::Policy};
 use scraper::{ElementRef, Html, Selector};
@@ -22,6 +29,7 @@ use crate::{
     models::{Lesson, VideoTrack},
 };
 
+mod historical;
 mod resource;
 mod sizes;
 
@@ -30,6 +38,7 @@ const LTI_UNAVAILABLE_RETRY_AFTER: Duration = Duration::from_secs(30);
 const LTI_RETRY_JITTER_MIN_MS: u64 = 250;
 const LTI_RETRY_JITTER_SPAN_MS: u16 = 501;
 const SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
+const HISTORICAL_SOURCE_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Default)]
 struct LtiCircuit {
@@ -46,7 +55,9 @@ struct VideoSession {
 
 #[derive(Clone)]
 struct CachedCourse {
-    session: VideoSession,
+    /// The new platform's session; None when the course has no teaching
+    /// class there (its recordings then all come from the old player).
+    session: Option<VideoSession>,
     lessons: Vec<Lesson>,
     expires_at: Instant,
 }
@@ -127,12 +138,13 @@ impl VideoService {
             .ok_or_else(|| AppError::NotFound("该讲次不存在、未开放，或不属于当前课程".into()))?;
 
         let detail = match self
-            .cached_video_detail(owner, course_id, jar.clone(), &cached.session, lesson_id)
+            .cached_video_detail(owner, course_id, jar.clone(), &cached, &lesson)
             .await
         {
             Ok(detail) => detail,
             Err(first_error) => {
-                // The JWT may have expired: authorize once more and retry.
+                // The platform session may have expired: authorize once more
+                // and retry.
                 self.cache
                     .remove(&(owner.to_string(), course_id.to_string()));
                 self.detail_cache.remove(&(
@@ -144,7 +156,7 @@ impl VideoService {
                 lesson = find_lesson(&cached, lesson_id).ok_or_else(|| {
                     AppError::NotFound("重新授权后该讲次已不可用或不属于当前课程".into())
                 })?;
-                self.cached_video_detail(owner, course_id, jar.clone(), &cached.session, lesson_id)
+                self.cached_video_detail(owner, course_id, jar.clone(), &cached, &lesson)
                     .await
                     .map_err(|_| first_error)?
             }
@@ -170,7 +182,16 @@ impl VideoService {
                     }
                 ))
             })?;
-        resource::resolve_resource_track(&lesson, track, &self.config)
+        self.resolve_video_url(&lesson, track)
+    }
+
+    /// The download URL of a track, with the headers its host wants.
+    fn resolve_video_url(&self, lesson: &Lesson, track: &VideoTrack) -> AppResult<ResolvedVideo> {
+        let mut resolved = resource::resolve_resource_track(lesson, track, &self.config)?;
+        if lesson.source == historical::SOURCE {
+            resolved.headers = vec![("referer".into(), self.config.courses_origin.clone())];
+        }
+        Ok(resolved)
     }
 
     async fn course(
@@ -202,12 +223,7 @@ impl VideoService {
         {
             return Ok(entry.clone());
         }
-        let (session, lessons) = source_with_timeout(SOURCE_TIMEOUT, "课堂视频平台", async {
-            let session = self.authorize(jar.clone(), course_id).await?;
-            let lessons = self.resource_lessons(jar.clone(), &session).await?;
-            Ok((session, lessons))
-        })
-        .await?;
+        let (session, lessons) = self.load_course(jar, course_id).await?;
         let cache_ttl = if lessons.is_empty() { 30 } else { 15 * 60 };
         let cached = CachedCourse {
             session,
@@ -218,8 +234,55 @@ impl VideoService {
         Ok(cached)
     }
 
+    /// The new platform's lessons, completed from the old player for the
+    /// lessons before the cutoff day (and for courses the new platform does
+    /// not know at all).
+    async fn load_course(
+        &self,
+        jar: Arc<Jar>,
+        course_id: &str,
+    ) -> AppResult<(Option<VideoSession>, Vec<Lesson>)> {
+        let cutoff = self.config.old_platform_cutoff;
+        let modern = source_with_timeout(SOURCE_TIMEOUT, "新版课堂视频平台", async {
+            let session = self.authorize(jar.clone(), course_id).await?;
+            let lessons = self.resource_lessons(jar.clone(), &session).await?;
+            Ok((session, lessons))
+        })
+        .await;
+        let mut absent_error = None;
+        let (session, modern_lessons) = match modern {
+            Ok((session, lessons)) => (Some(session), lessons),
+            Err(AppError::VideoNotScheduled) => (None, Vec::new()),
+            Err(error) if new_platform_absent(&error) => {
+                tracing::info!(course_id, error = %error, "new platform has nothing for this course; trying the old player");
+                absent_error = Some(error);
+                (None, Vec::new())
+            }
+            Err(error) => return Err(error),
+        };
+        if session.is_some() && !needs_old_platform(cutoff, &modern_lessons) {
+            return Ok((session, modern_lessons));
+        }
+        let history = source_with_timeout(
+            HISTORICAL_SOURCE_TIMEOUT,
+            "旧版课堂视频",
+            self.historical_course(jar, course_id),
+        )
+        .await?;
+        match history {
+            Some(old) => {
+                tracing::info!(course_id, old = old.len(), new = modern_lessons.len(), "merged old-player recordings");
+                Ok((session, merge_platforms(cutoff, modern_lessons, old)))
+            }
+            None => match absent_error {
+                Some(error) => Err(error),
+                None => Ok((session, modern_lessons)),
+            },
+        }
+    }
+
     /// Launches the course's 课堂视频 tool in Canvas and completes the LTI
-    /// login with the video platform.
+    /// login with the new video platform.
     async fn authorize(&self, jar: Arc<Jar>, course_id: &str) -> AppResult<VideoSession> {
         let client = build_client(jar.clone(), Policy::limited(10))?;
         let no_redirect = build_client(jar, Policy::none())?;
@@ -240,11 +303,13 @@ impl VideoService {
             ));
         }
         let launch_html = launch_response.text().await?;
-        let (initiation_action, initiation_fields) = find_form(
-            &launch_html,
-            |action| action.contains(resource::INITIATION_PATH),
-            "未识别到新版课堂视频的授权入口：该课程可能还没有接入新版平台，请从 Canvas 官网核对课程的“课堂视频”入口",
-        )?;
+        let (initiation_action, initiation_fields) =
+            find_form(&launch_html, |action| action.contains(resource::INITIATION_PATH))?
+                .ok_or_else(|| {
+                    AppError::VideoUnavailable(
+                        "该课程没有接入新版课堂视频平台，请从 Canvas 官网核对课程的“课堂视频”入口".into(),
+                    )
+                })?;
         self.authorize_resource_video(
             &client,
             &no_redirect,
@@ -352,13 +417,13 @@ impl VideoService {
         owner: &str,
         course_id: &str,
         jar: Arc<Jar>,
-        session: &VideoSession,
-        lesson_id: &str,
+        course: &CachedCourse,
+        lesson: &Lesson,
     ) -> AppResult<VideoDetail> {
         let key = (
             owner.to_string(),
             course_id.to_string(),
-            lesson_id.to_string(),
+            lesson.video_id.clone(),
         );
         if let Some(cached) = self.detail_cache.get(&key)
             && cached.expires_at > Instant::now()
@@ -376,7 +441,15 @@ impl VideoService {
         {
             return Ok(cached.detail.clone());
         }
-        let detail = self.resource_video_detail(jar, session, lesson_id).await?;
+        let detail = if lesson.source == historical::SOURCE {
+            self.historical_video_detail(jar, &lesson.video_id).await?
+        } else {
+            let session = course.session.as_ref().ok_or_else(|| {
+                AppError::VideoUnavailable("新版课堂视频平台没有这门课程的录像".into())
+            })?;
+            self.resource_video_detail(jar, session, &lesson.video_id)
+                .await?
+        };
         self.detail_cache.insert(
             key,
             CachedDetail {
@@ -394,6 +467,56 @@ fn find_lesson(course: &CachedCourse, lesson_id: &str) -> Option<Lesson> {
         .iter()
         .find(|lesson| lesson.video_id == lesson_id && lesson.available)
         .cloned()
+}
+
+/// The day of a lesson, from the school's "YYYY-MM-DD HH:MM:SS" times.
+fn lesson_date(lesson: &Lesson) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(lesson.begin_time.trim().get(..10)?, "%Y-%m-%d").ok()
+}
+
+/// Whether the old player has to be asked for this course: the new platform
+/// lists lessons from before the migration (they are not playable there) or
+/// nothing at all.
+fn needs_old_platform(cutoff: NaiveDate, modern: &[Lesson]) -> bool {
+    modern.is_empty()
+        || modern
+            .iter()
+            .any(|lesson| lesson_date(lesson).is_some_and(|day| day < cutoff))
+}
+
+/// The new platform's lessons from the cutoff day on, plus the old player's
+/// lessons before it. When the old player has none, the new platform's
+/// entries for those days stay (they show as not open).
+fn merge_platforms(cutoff: NaiveDate, modern: Vec<Lesson>, old: Vec<Lesson>) -> Vec<Lesson> {
+    let before_cutoff = |lesson: &Lesson| lesson_date(lesson).is_some_and(|day| day < cutoff);
+    let old: Vec<Lesson> = old
+        .into_iter()
+        .filter(|lesson| lesson_date(lesson).is_none_or(|day| day < cutoff))
+        .collect();
+    let mut merged: Vec<Lesson> = modern
+        .iter()
+        .filter(|lesson| !before_cutoff(lesson))
+        .cloned()
+        .collect();
+    if old.is_empty() {
+        merged.extend(modern.into_iter().filter(before_cutoff));
+    } else {
+        merged.extend(old);
+    }
+    merged.sort_by(|a, b| a.begin_time.cmp(&b.begin_time));
+    merged
+}
+
+/// The new platform has nothing for this course, as opposed to being down:
+/// the old player is then the only source worth asking.
+fn new_platform_absent(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::VideoNotScheduled
+            | AppError::VideoUnavailable(_)
+            | AppError::Forbidden(_)
+            | AppError::NotFound(_)
+    )
 }
 
 fn external_tool_id_from_html(html: &str) -> Option<String> {
@@ -450,20 +573,23 @@ fn lti_unavailable_error(retry_after_seconds: u64) -> AppError {
     )
 }
 
+/// The first form whose action satisfies `predicate`, with its inputs.
 fn find_form(
     html: &str,
     predicate: impl Fn(&str) -> bool,
-    missing_message: &str,
-) -> AppResult<(String, HashMap<String, String>)> {
+) -> AppResult<Option<(String, HashMap<String, String>)>> {
     let document = Html::parse_document(html);
     let selector = Selector::parse("form")
         .map_err(|error| AppError::internal(anyhow::anyhow!(error.to_string())))?;
-    let form = document
+    Ok(document
         .select(&selector)
         .find(|form| form.value().attr("action").is_some_and(&predicate))
-        .ok_or_else(|| AppError::Upstream(missing_message.into()))?;
-    let action = form.value().attr("action").unwrap_or_default().to_string();
-    Ok((action, form_inputs(form)))
+        .map(|form| {
+            (
+                form.value().attr("action").unwrap_or_default().to_string(),
+                form_inputs(form),
+            )
+        }))
 }
 
 const MAX_LTI_FORM_HOPS: usize = 4;
@@ -766,6 +892,59 @@ mod tests {
         Config::for_tests()
     }
 
+    fn lesson(id: &str, begin: &str, source: &str, available: bool) -> Lesson {
+        Lesson {
+            video_id: id.into(),
+            title: id.into(),
+            begin_time: begin.into(),
+            end_time: String::new(),
+            classroom: String::new(),
+            audit_status: if available { 3 } else { 1 },
+            available,
+            source: source.into(),
+        }
+    }
+
+    fn cutoff() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 6, 29).unwrap()
+    }
+
+    #[test]
+    fn lessons_before_the_cutoff_come_from_the_old_player() {
+        let modern = vec![
+            lesson("n1", "2026-06-28 08:00:00", resource::SOURCE, false),
+            lesson("n2", "2026-06-29 08:00:00", resource::SOURCE, true),
+            lesson("n3", "2026-09-01 08:00:00", resource::SOURCE, true),
+        ];
+        let old = vec![
+            lesson("h_a", "2026-06-28 08:00:00", historical::SOURCE, true),
+            lesson("h_b", "2026-06-30 08:00:00", historical::SOURCE, true),
+            lesson("h_c", "", historical::SOURCE, true),
+        ];
+        assert!(needs_old_platform(cutoff(), &modern));
+        assert!(!needs_old_platform(cutoff(), &modern[1..]));
+        assert!(needs_old_platform(cutoff(), &[]));
+        let merged = merge_platforms(cutoff(), modern.clone(), old);
+        let ids: Vec<&str> = merged.iter().map(|lesson| lesson.video_id.as_str()).collect();
+        // The old player wins before the cutoff, the new platform from it on;
+        // an old entry without a date is kept, one after the cutoff is not.
+        assert_eq!(ids, vec!["h_c", "h_a", "n2", "n3"]);
+        // Without old recordings the new platform's (closed) entries stay.
+        let kept = merge_platforms(cutoff(), modern, vec![]);
+        let ids: Vec<&str> = kept.iter().map(|lesson| lesson.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["n1", "n2", "n3"]);
+    }
+
+    #[test]
+    fn only_missing_courses_fall_back_to_the_old_player() {
+        assert!(new_platform_absent(&AppError::VideoNotScheduled));
+        assert!(new_platform_absent(&AppError::VideoUnavailable("no entry".into())));
+        assert!(new_platform_absent(&AppError::Forbidden("no access".into())));
+        assert!(!new_platform_absent(&AppError::Unauthorized));
+        assert!(!new_platform_absent(&AppError::Upstream("HTTP 502".into())));
+        assert!(!new_platform_absent(&AppError::upstream_unavailable("down", 30)));
+    }
+
     #[test]
     fn parses_parameters_from_fragment_routes() {
         let url = "https://v.sjtu.edu.cn/jy-application-resourcemanage-ui/#/lms/launch?jwt_token=hello%2Bworld";
@@ -786,21 +965,18 @@ mod tests {
               <input type="hidden" name="target_link_uri" value="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record">
             </form>
         "#;
-        let (action, fields) = find_form(
-            html,
-            |action| action.contains(resource::INITIATION_PATH),
-            "missing",
-        )
-        .unwrap();
+        let (action, fields) = find_form(html, |action| action.contains(resource::INITIATION_PATH))
+            .unwrap()
+            .unwrap();
         assert!(action.ends_with(resource::INITIATION_PATH));
         assert_eq!(fields["login_hint"], "hint");
         assert!(
             find_form(
                 r#"<form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/oidc/login_initiations"></form>"#,
                 |action| action.contains(resource::INITIATION_PATH),
-                "missing"
             )
-            .is_err()
+            .unwrap()
+            .is_none()
         );
     }
 
@@ -959,6 +1135,23 @@ mod tests {
         assert!(validate_video_action(&allowed, configured).is_ok());
         assert!(validate_video_action(&outside, configured).is_err());
         assert!(validate_video_action(&Url::parse("https://v.sjtu.edu.cn/jy-lti-adapter").unwrap(), configured).is_ok());
+    }
+
+    #[test]
+    fn old_player_downloads_carry_the_old_referer() {
+        let config = lti_test_config();
+        let service = VideoService::new(Arc::new(config.clone()));
+        let track = VideoTrack {
+            id: "1".into(),
+            view: 0,
+            url: "https://media.example/old.mp4".into(),
+        };
+        let old = lesson("h_a", "2026-03-02 08:00:00", historical::SOURCE, true);
+        let resolved = service.resolve_video_url(&old, &track).unwrap();
+        assert_eq!(resolved.headers, vec![("referer".to_string(), config.courses_origin.clone())]);
+        let new = lesson("1", "2026-09-01 08:00:00", resource::SOURCE, true);
+        let resolved = service.resolve_video_url(&new, &track).unwrap();
+        assert!(resolved.headers[0].1.contains("resourcemanage"));
     }
 
     #[test]

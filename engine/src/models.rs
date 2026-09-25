@@ -59,6 +59,9 @@ pub struct Lesson {
     /// The platform's `vodDisplayStatus`; 3, 5 and 6 mean the recording is open.
     pub audit_status: i64,
     pub available: bool,
+    /// Where the recording lives: `resource` (the new platform) or
+    /// `historical` (课堂视频旧版, for recordings before the migration).
+    pub source: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

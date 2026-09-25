@@ -551,7 +551,14 @@ function LessonList({
               />
             </div>
             <span className="w-8 text-xs text-muted">{index + 1}</span>
-            <span className="min-w-0 flex-1 truncate">{lesson.title}</span>
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <span className="truncate">{lesson.title}</span>
+              {lesson.source === 'historical' ? (
+                <Chip size="sm" color="default" variant="soft" className="shrink-0" title="迁移前的录像，来自“课堂视频旧版”">
+                  旧版
+                </Chip>
+              ) : null}
+            </span>
             <span className="w-44 text-xs text-muted">
               {time.date}
               {time.time ? <span className="ml-2">{time.time}</span> : null}

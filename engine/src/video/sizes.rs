@@ -151,13 +151,7 @@ impl VideoService {
                 let detail = source_with_timeout(
                     Duration::from_secs(10),
                     "录像详情",
-                    self.cached_video_detail(
-                        owner,
-                        course_id,
-                        jar.clone(),
-                        &cached.session,
-                        lesson_id,
-                    ),
+                    self.cached_video_detail(owner, course_id, jar.clone(), &cached, lesson),
                 )
                 .await;
                 let client = metadata_client(jar.clone())?;
@@ -171,11 +165,7 @@ impl VideoService {
                             Some(track) => {
                                 // Use the same URL selection as the real download.
                                 let probe = async {
-                                    let resolved = resource::resolve_resource_track(
-                                        lesson,
-                                        track,
-                                        &self.config,
-                                    )?;
+                                    let resolved = self.resolve_video_url(lesson, track)?;
                                     probe_size(&client, &resolved).await
                                 };
                                 let size =
@@ -466,14 +456,15 @@ mod tests {
             classroom: String::new(),
             audit_status: 3,
             available: true,
+            source: resource::SOURCE.into(),
         };
         service.cache.insert(
             ("owner".into(), "42".into()),
             CachedCourse {
-                session: VideoSession {
+                session: Some(VideoSession {
                     token: String::new(),
                     teaching_class_id: "42".into(),
-                },
+                }),
                 lessons: vec![lesson],
                 expires_at: Instant::now() + READY_TTL,
             },

@@ -8,6 +8,7 @@ use serde_json::Value;
 use super::*;
 
 pub(super) const INITIATION_PATH: &str = "/lti/canvas/oidc/login-initiation/canvas-record";
+pub(super) const SOURCE: &str = "resource";
 const LAUNCH_PATH: &str = "/lti/canvas/launch/canvas-record";
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 200;
@@ -311,6 +312,7 @@ fn resource_lesson(value: &Value, index: usize) -> AppResult<Lesson> {
         classroom: string(&["clroName"]),
         audit_status: status.unwrap_or_default(),
         available: ready && clickable,
+        source: SOURCE.into(),
     })
 }
 

@@ -74,6 +74,8 @@ export interface Lesson {
   classroom: string;
   audit_status: number;
   available: boolean;
+  /** resource (the new platform) | historical (课堂视频旧版, lessons before the migration) */
+  source: 'resource' | 'historical';
 }
 
 export interface CourseFile {

@@ -1,7 +1,7 @@
 {
   "name": "sjtu-canvas-downloader",
   "productName": "SJTU Canvas Downloader",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "上海交通大学 Canvas 课堂录像与课程文件下载器",
   "author": {
     "name": "SJTU Canvas Downloader contributors"

@@ -208,6 +208,7 @@ pub fn lessons(course_id: &str) -> AppResult<Vec<Lesson>> {
                 audit_status: if index == 10 { 1 } else { 3 },
                 // The newest lesson is still being processed, like on the real platform.
                 available: index != 10,
+                source: "resource".into(),
             }
         })
         .collect())

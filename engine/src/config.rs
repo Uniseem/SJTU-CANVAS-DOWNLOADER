@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use chrono::NaiveDate;
 
 /// Name of the app's data folder.
 pub const APP_NAME: &str = "SJTU Canvas Downloader";
@@ -49,6 +50,9 @@ pub struct Config {
     pub video_lti_adapter: String,
     pub resource_video_api: String,
     pub jaccount_origin: String,
+    /// Recordings of lessons before this day were not migrated to the new
+    /// platform and are fetched from the old player (课堂视频旧版) instead.
+    pub old_platform_cutoff: NaiveDate,
     /// Development aid honoured by debug builds only (SJTU_CANVAS_TEST_MODE=1):
     /// the school endpoints may be overridden and loopback test servers are
     /// accepted as upstreams. Release builds ignore it.
@@ -85,6 +89,13 @@ impl Config {
         config.resource_video_api =
             endpoint("SJTU_CANVAS_RESOURCE_VIDEO_API", &config.resource_video_api);
         config.jaccount_origin = endpoint("SJTU_CANVAS_JACCOUNT_ORIGIN", &config.jaccount_origin);
+        if let Some(cutoff) = test_mode
+            .then(|| env::var("SJTU_CANVAS_OLD_PLATFORM_CUTOFF").ok())
+            .flatten()
+            .and_then(|value| NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok())
+        {
+            config.old_platform_cutoff = cutoff;
+        }
         config.test_mode = test_mode;
         config.fake_school = test_mode && env_flag("SJTU_CANVAS_FAKE_SCHOOL");
         config.fake_media = test_mode
@@ -113,6 +124,7 @@ impl Config {
             video_lti_adapter: "https://v.sjtu.edu.cn/jy-lti-adapter".into(),
             resource_video_api: "https://v.sjtu.edu.cn/jy-application-resourcemanage".into(),
             jaccount_origin: "https://jaccount.sjtu.edu.cn".into(),
+            old_platform_cutoff: NaiveDate::from_ymd_opt(2026, 6, 29).expect("valid date"),
             test_mode: false,
             fake_school: false,
             fake_media: None,
