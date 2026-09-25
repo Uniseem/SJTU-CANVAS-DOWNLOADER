@@ -109,7 +109,7 @@ export function SettingsPage() {
               </SettingRow>
               <SettingRow
                 title="同时下载的文件数"
-                description={`同时下载更多文件会占用更多带宽；学校服务繁忙时建议 2–3 个。最多 ${settings.concurrency_max} 个。`}
+                description={`同时下载更多文件更能跑满带宽；学校服务繁忙或网络不稳定时可以调低。最多 ${settings.concurrency_max} 个。`}
               >
                 <NumberField
                   aria-label="同时下载的文件数"

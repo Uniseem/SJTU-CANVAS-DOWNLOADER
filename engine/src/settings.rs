@@ -10,7 +10,7 @@ use crate::http::ProxySettings;
 
 const PREFERENCES: &str = "preferences_v1";
 
-pub const DEFAULT_CONCURRENCY: usize = 3;
+pub const DEFAULT_CONCURRENCY: usize = 7;
 pub const MAX_CONCURRENCY: usize = 8;
 /// Video tracks the user can download: 电脑屏幕, 教室摄像头, 合成画面.
 pub const TRACKS: [&str; 3] = ["slides", "teacher", "composite"];
