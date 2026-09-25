@@ -74,7 +74,6 @@ impl Account {
         for value in [
             &config.canvas_origin,
             &config.courses_origin,
-            &config.video_api,
             &config.video_lti_adapter,
             &config.resource_video_api,
         ] {

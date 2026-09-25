@@ -1,11 +1,17 @@
+//! Classroom recordings from the SJTU video platform (v.sjtu.edu.cn, the
+//! resource-management platform Canvas switched to in August 2026).
+//!
+//! Canvas opens the platform's LTI 1.3 tool through `jy-lti-adapter`. The
+//! launch ends on the platform's web UI with a `jwt_token`, which the engine
+//! keeps in memory and sends as the `jwt-token` header to the platform API
+//! (see `video/resource.rs`). The former canvas-sjtu API and the LTI 1.1
+//! "课堂视频旧版" player are gone; neither is tried any more.
+
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use dashmap::DashMap;
 use reqwest::{Client, StatusCode, cookie::Jar, header, redirect::Policy};
 use scraper::{ElementRef, Html, Selector};
-use serde::Deserialize;
-use serde_json::Value;
 use tokio::{sync::Mutex, time::Instant};
 use url::Url;
 
@@ -16,23 +22,14 @@ use crate::{
     models::{Lesson, VideoTrack},
 };
 
-mod historical;
 mod resource;
 mod sizes;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum VideoProtocol {
-    Legacy,
-    Resource,
-    Historical,
-}
 
 const DEFAULT_TOOL_ID: &str = "8329";
 const LTI_UNAVAILABLE_RETRY_AFTER: Duration = Duration::from_secs(30);
 const LTI_RETRY_JITTER_MIN_MS: u64 = 250;
 const LTI_RETRY_JITTER_SPAN_MS: u16 = 501;
-const MODERN_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
-const HISTORICAL_SOURCE_TIMEOUT: Duration = Duration::from_secs(45);
+const SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Default)]
 struct LtiCircuit {
@@ -41,9 +38,10 @@ struct LtiCircuit {
 
 #[derive(Clone)]
 struct VideoSession {
+    /// The platform JWT; sent as `jwt-token`, never written to disk.
     token: String,
-    canvas_course_id: String,
-    protocol: VideoProtocol,
+    /// The teaching class (教学班) the Canvas course maps to.
+    teaching_class_id: String,
 }
 
 #[derive(Clone)]
@@ -53,36 +51,10 @@ struct CachedCourse {
     expires_at: Instant,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AccessParams {
-    #[serde(default)]
-    cour_id: String,
-    #[serde(default)]
-    lti_course_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ExchangeData {
-    token: String,
-    params: AccessParams,
-}
-
-#[derive(Debug, Deserialize)]
-struct Envelope<T> {
-    data: Option<T>,
-    #[serde(default)]
-    message: Option<String>,
-    #[serde(default)]
-    status: Option<i64>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// The camera views of one recording.
+#[derive(Clone, Debug)]
 struct VideoDetail {
-    #[serde(default)]
-    video_play_response_vo_list: Vec<VideoTrack>,
+    tracks: Vec<VideoTrack>,
 }
 
 #[derive(Clone)]
@@ -151,11 +123,7 @@ impl VideoService {
         validate_canvas_id(course_id)?;
         validate_resource_id(lesson_id)?;
         let mut cached = self.course(owner, jar.clone(), course_id, false).await?;
-        let mut lesson = cached
-            .lessons
-            .iter()
-            .find(|lesson| lesson.video_id == lesson_id && lesson.available)
-            .cloned()
+        let mut lesson = find_lesson(&cached, lesson_id)
             .ok_or_else(|| AppError::NotFound("该讲次不存在、未开放，或不属于当前课程".into()))?;
 
         let detail = match self
@@ -164,6 +132,7 @@ impl VideoService {
         {
             Ok(detail) => detail,
             Err(first_error) => {
+                // The JWT may have expired: authorize once more and retry.
                 self.cache
                     .remove(&(owner.to_string(), course_id.to_string()));
                 self.detail_cache.remove(&(
@@ -172,42 +141,36 @@ impl VideoService {
                     lesson_id.to_string(),
                 ));
                 cached = self.course(owner, jar.clone(), course_id, true).await?;
-                lesson = cached
-                    .lessons
-                    .iter()
-                    .find(|lesson| lesson.video_id == lesson_id && lesson.available)
-                    .cloned()
-                    .ok_or_else(|| {
-                        AppError::NotFound("重新授权后该讲次已不可用或不属于当前课程".into())
-                    })?;
+                lesson = find_lesson(&cached, lesson_id).ok_or_else(|| {
+                    AppError::NotFound("重新授权后该讲次已不可用或不属于当前课程".into())
+                })?;
                 self.cached_video_detail(owner, course_id, jar.clone(), &cached.session, lesson_id)
                     .await
                     .map_err(|_| first_error)?
             }
         };
-        let requested_code = track_code(track_kind)?;
+        let requested = track_code(track_kind)?;
         let track = detail
-            .video_play_response_vo_list
+            .tracks
             .iter()
-            .find(|track| track.cdvi_view_num == requested_code)
+            .find(|track| track.view == requested)
             .ok_or_else(|| {
                 let available = detail
-                    .video_play_response_vo_list
+                    .tracks
                     .iter()
-                    .map(|track| track_label(track.cdvi_view_num))
+                    .map(|track| track_label(track.view))
                     .collect::<Vec<_>>()
                     .join("、");
                 AppError::NotFound(format!(
-                    "当前讲次没有所选分轨{}",
+                    "当前讲次没有所选画面{}",
                     if available.is_empty() {
                         String::new()
                     } else {
-                        format!("，可用分轨：{available}")
+                        format!("，可用画面：{available}")
                     }
                 ))
             })?;
-        self.resolve_video_url(jar, &cached.session, &lesson, track)
-            .await
+        resource::resolve_resource_track(&lesson, track, &self.config)
     }
 
     async fn course(
@@ -239,27 +202,12 @@ impl VideoService {
         {
             return Ok(entry.clone());
         }
-        let modern = source_with_timeout(MODERN_SOURCE_TIMEOUT, "新视频源", async {
+        let (session, lessons) = source_with_timeout(SOURCE_TIMEOUT, "课堂视频平台", async {
             let session = self.authorize(jar.clone(), course_id).await?;
-            let lessons = self.fetch_lessons(jar.clone(), course_id, &session).await?;
+            let lessons = self.resource_lessons(jar.clone(), &session).await?;
             Ok((session, lessons))
         })
-        .await;
-        let (session, lessons) = if historical::should_try_history(&modern) {
-            let history = source_with_timeout(
-                HISTORICAL_SOURCE_TIMEOUT,
-                "旧视频源",
-                self.historical_course(jar, course_id),
-            )
-            .await;
-            let selected = historical::select_fallback(modern, history)?;
-            if selected.0.protocol == VideoProtocol::Historical {
-                tracing::info!("automatically selected historical course recordings");
-            }
-            selected
-        } else {
-            modern?
-        };
+        .await?;
         let cache_ttl = if lessons.is_empty() { 30 } else { 15 * 60 };
         let cached = CachedCourse {
             session,
@@ -270,6 +218,8 @@ impl VideoService {
         Ok(cached)
     }
 
+    /// Launches the course's 课堂视频 tool in Canvas and completes the LTI
+    /// login with the video platform.
     async fn authorize(&self, jar: Arc<Jar>, course_id: &str) -> AppResult<VideoSession> {
         let client = build_client(jar.clone(), Policy::limited(10))?;
         let no_redirect = build_client(jar, Policy::none())?;
@@ -292,69 +242,16 @@ impl VideoService {
         let launch_html = launch_response.text().await?;
         let (initiation_action, initiation_fields) = find_form(
             &launch_html,
-            |action| {
-                action.contains("oidc/login_initiations")
-                    || action.contains("/lti/canvas/oidc/login-initiation/canvas-record")
-            },
-            "未识别到课堂视频授权入口，请从 Canvas 官网核对该课程的视频入口",
+            |action| action.contains(resource::INITIATION_PATH),
+            "未识别到新版课堂视频的授权入口：该课程可能还没有接入新版平台，请从 Canvas 官网核对课程的“课堂视频”入口",
         )?;
-        if initiation_action.contains("/lti/canvas/oidc/login-initiation/canvas-record") {
-            return self
-                .authorize_resource_video(
-                    &client,
-                    &no_redirect,
-                    &initiation_action,
-                    &initiation_fields,
-                )
-                .await;
-        }
-        let initiation_url = absolute_action(&self.config.video_api, &initiation_action)?;
-        validate_video_action(&initiation_url, &self.config.video_api)?;
-        let initiation_response = self
-            .initiate_lti(&client, &initiation_url, &initiation_fields)
-            .await?;
-        let token_id =
-            match resolve_lti_launch(self, &client, &self.config, initiation_response).await? {
-                LtiResolution::TokenId(token_id) => token_id,
-                LtiResolution::Launch { url, fields } => {
-                    let auth_response = self
-                        .classify_video_response(no_redirect.post(url).form(&fields).send().await?)
-                        .await?;
-                    token_id_from_auth_response(auth_response).await?
-                }
-            };
-        let exchange_response = client
-            .get(format!(
-                "{}/lti3/getAccessTokenByTokenId",
-                self.config.video_api
-            ))
-            .query(&[("tokenId", token_id)])
-            .send()
-            .await?;
-        let exchange: Envelope<ExchangeData> = self
-            .classify_video_response(exchange_response)
-            .await?
-            .json()
-            .await
-            .map_err(|error| AppError::Upstream(format!("视频授权响应异常：{error}")))?;
-        let error_message = exchange.message.clone().unwrap_or_else(|| {
-            exchange
-                .status
-                .map(|status| format!("状态 {status}"))
-                .unwrap_or_else(|| "服务未返回数据".into())
-        });
-        let data = exchange
-            .data
-            .ok_or_else(|| AppError::Upstream(format!("视频授权失败：{error_message}")))?;
-        let canvas_course_id = [data.params.cour_id, data.params.lti_course_id]
-            .into_iter()
-            .find(|value| !value.trim().is_empty())
-            .ok_or_else(|| AppError::Upstream("视频授权没有返回课程 ID".into()))?;
-        Ok(VideoSession {
-            token: data.token,
-            canvas_course_id,
-            protocol: VideoProtocol::Legacy,
-        })
+        self.authorize_resource_video(
+            &client,
+            &no_redirect,
+            &initiation_action,
+            &initiation_fields,
+        )
+        .await
     }
 
     async fn initiate_lti(
@@ -363,10 +260,10 @@ impl VideoService {
         initiation_url: &Url,
         initiation_fields: &HashMap<String, String>,
     ) -> AppResult<reqwest::Response> {
-        // Serialize only the short initiation exchange. If the shared video API
-        // is down, the first caller performs the sole retry and opens the
-        // circuit; concurrent course loads then fail fast instead of amplifying
-        // the outage into one request pair per course.
+        // Serialize only the short initiation exchange. If the shared video
+        // gateway is down, the first caller performs the sole retry and opens
+        // the circuit; concurrent course loads then fail fast instead of
+        // amplifying the outage into one request pair per course.
         let mut circuit = self.lti_circuit.lock().await;
         let now = Instant::now();
         if let Some(unavailable_until) = circuit.unavailable_until {
@@ -396,7 +293,7 @@ impl VideoService {
 
         // The initiation is a read-only OIDC bootstrap. Retry the transient 503
         // once with jitter only when the gateway returned neither a redirect nor
-        // a cookie mutation. Never replay later launch/token mutations here.
+        // a cookie mutation. Never replay later launch mutations here.
         let _ = response.bytes().await;
         let jitter_ms =
             LTI_RETRY_JITTER_MIN_MS + u64::from(rand::random::<u16>() % LTI_RETRY_JITTER_SPAN_MS);
@@ -434,6 +331,8 @@ impl VideoService {
         Err(lti_unavailable_error(LTI_UNAVAILABLE_RETRY_AFTER.as_secs()))
     }
 
+    /// The id of the course's 课堂视频 external tool, read from the course
+    /// navigation; the school-wide default when the page cannot be read.
     async fn external_tool_id(&self, client: &Client, course_id: &str) -> String {
         let Ok(response) = client
             .get(format!("{}/courses/{course_id}", self.config.canvas_origin))
@@ -445,135 +344,7 @@ impl VideoService {
         let Ok(html) = response.text().await else {
             return DEFAULT_TOOL_ID.into();
         };
-        let document = Html::parse_document(&html);
-        let Ok(selector) = Selector::parse("a[href*='/external_tools/']") else {
-            return DEFAULT_TOOL_ID.into();
-        };
-        document
-            .select(&selector)
-            .filter_map(|link| {
-                let text = link.text().collect::<String>();
-                let href = link.value().attr("href")?;
-                (text.contains("课堂视频") && !text.contains("旧版"))
-                    .then(|| {
-                        href.split("/external_tools/")
-                            .nth(1)?
-                            .split(['?', '/'])
-                            .next()
-                    })
-                    .flatten()
-                    .map(str::to_string)
-            })
-            .next()
-            .unwrap_or_else(|| DEFAULT_TOOL_ID.into())
-    }
-
-    async fn fetch_lessons(
-        &self,
-        jar: Arc<Jar>,
-        course_id: &str,
-        session: &VideoSession,
-    ) -> AppResult<Vec<Lesson>> {
-        if session.protocol == VideoProtocol::Resource {
-            return self.resource_lessons(jar, session).await;
-        }
-        let client = build_client(jar, Policy::limited(5))?;
-        let candidates = course_id_candidates(course_id, &session.canvas_course_id);
-        let mut recognized_empty = false;
-        let mut last_message = String::new();
-
-        for candidate in candidates {
-            for body in [
-                serde_json::json!({"canvasCourseId": candidate.clone()}),
-                serde_json::json!({"canvasCourseId": candidate.clone(), "pageIndex": 1, "pageSize": 1000}),
-                serde_json::json!({"courId": candidate.clone()}),
-                serde_json::json!({"courId": candidate.clone(), "pageIndex": 1, "pageSize": 1000}),
-                serde_json::json!({"courseId": candidate.clone()}),
-                serde_json::json!({"ltiCourseId": candidate.clone()}),
-            ] {
-                let response = client
-                    .post(format!(
-                        "{}/directOnDemandPlay/findVodVideoList",
-                        self.config.video_api
-                    ))
-                    .header("token", &session.token)
-                    .json(&body)
-                    .send()
-                    .await?;
-                let payload: Value = self
-                    .classify_video_response(response)
-                    .await?
-                    .json()
-                    .await
-                    .map_err(|error| AppError::Upstream(format!("讲次响应异常：{error}")))?;
-                if let Some(records) = extract_records(&payload) {
-                    if records.is_empty() {
-                        recognized_empty = true;
-                        continue;
-                    }
-                    let mut lessons = records
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(index, value)| lesson_from_value(value, index))
-                        .filter(|lesson| lesson.audit_status == 3)
-                        .collect::<Vec<_>>();
-                    lessons.sort_by(|left, right| left.begin_time.cmp(&right.begin_time));
-                    return Ok(lessons);
-                }
-                last_message = payload
-                    .get("message")
-                    .or_else(|| payload.get("msg"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("返回结构未知")
-                    .to_string();
-            }
-        }
-        if recognized_empty {
-            return Ok(Vec::new());
-        }
-        Err(AppError::Upstream(format!(
-            "视频列表接口未返回可识别数据：{last_message}"
-        )))
-    }
-
-    async fn video_detail(
-        &self,
-        jar: Arc<Jar>,
-        session: &VideoSession,
-        lesson_id: &str,
-    ) -> AppResult<VideoDetail> {
-        if session.protocol == VideoProtocol::Resource {
-            return self.resource_video_detail(jar, session, lesson_id).await;
-        }
-        if session.protocol == VideoProtocol::Historical {
-            return self.historical_video_detail(jar, lesson_id).await;
-        }
-        let client = build_client(jar, Policy::limited(5))?;
-        let form = reqwest::multipart::Form::new()
-            .text("playTypeHls", "true")
-            .text("isAudit", "true")
-            .text("id", lesson_id.to_string());
-        let response = client
-            .post(format!(
-                "{}/directOnDemandPlay/getVodVideoInfos",
-                self.config.video_api
-            ))
-            .header("token", &session.token)
-            .multipart(form)
-            .send()
-            .await?;
-        let response = self.classify_video_response(response).await?;
-        if !response.status().is_success() {
-            return Err(AppError::Upstream(format!(
-                "视频详情返回 HTTP {}",
-                response.status()
-            )));
-        }
-        let payload: Value = response
-            .json()
-            .await
-            .map_err(|error| AppError::Upstream(format!("视频详情响应异常：{error}")))?;
-        video_detail_from_payload(payload)
+        external_tool_id_from_html(&html).unwrap_or_else(|| DEFAULT_TOOL_ID.into())
     }
 
     async fn cached_video_detail(
@@ -605,7 +376,7 @@ impl VideoService {
         {
             return Ok(cached.detail.clone());
         }
-        let detail = self.video_detail(jar, session, lesson_id).await?;
+        let detail = self.resource_video_detail(jar, session, lesson_id).await?;
         self.detail_cache.insert(
             key,
             CachedDetail {
@@ -615,99 +386,32 @@ impl VideoService {
         );
         Ok(detail)
     }
+}
 
-    async fn resolve_video_url(
-        &self,
-        jar: Arc<Jar>,
-        session: &VideoSession,
-        lesson: &Lesson,
-        track: &VideoTrack,
-    ) -> AppResult<ResolvedVideo> {
-        if session.protocol == VideoProtocol::Resource {
-            return resource::resolve_resource_track(lesson, track, &self.config);
-        }
-        if session.protocol == VideoProtocol::Historical {
-            let mut resolved = resource::resolve_resource_track(lesson, track, &self.config)?;
-            resolved.headers = vec![("referer".into(), self.config.courses_origin.clone())];
-            return Ok(resolved);
-        }
-        let signed = track
-            .direct_url()
-            .ok_or_else(|| AppError::NotFound("所选分轨没有可用下载地址".into()))?;
-        let signed_url = Url::parse(signed)?;
-        validate_generated_url(&signed_url)?;
-        if signed_url.path().to_ascii_lowercase().ends_with(".m3u8") {
-            return Err(AppError::Conflict(
-                "该讲次只提供 HLS 流，当前版本不会把播放列表误存为视频文件".into(),
-            ));
-        }
+fn find_lesson(course: &CachedCourse, lesson_id: &str) -> Option<Lesson> {
+    course
+        .lessons
+        .iter()
+        .find(|lesson| lesson.video_id == lesson_id && lesson.available)
+        .cloned()
+}
 
-        let official_url = Url::parse(&format!(
-            "{}/directOnDemandPlay/downloadVideo?id={}",
-            self.config.video_api,
-            urlencoding::encode(&STANDARD.encode(track.id.as_bytes()))
-        ))?;
-        let no_redirect = build_client(jar.clone(), Policy::none())?;
-        let official_response = no_redirect
-            .get(official_url.clone())
-            .header("token", &session.token)
-            .header(header::REFERER, &self.config.courses_origin)
-            .header(header::RANGE, "bytes=0-0")
-            .send()
-            .await;
-
-        let mut upstream_url = signed_url.clone();
-        let mut headers = vec![("referer".to_string(), self.config.courses_origin.clone())];
-        if let Ok(response) = official_response {
-            // This is an optional redirect probe. A 503 deliberately falls
-            // through to the already validated signed URL instead of blocking a
-            // download that can still succeed without the API endpoint.
-            if response.status().is_redirection() {
-                if let Some(location) = response
-                    .headers()
-                    .get(header::LOCATION)
-                    .and_then(|value| value.to_str().ok())
-                    && let Ok(resolved) = official_url.join(location)
-                    && validate_generated_url(&resolved).is_ok()
-                {
-                    upstream_url = resolved;
-                    headers.clear();
-                }
-            } else if (response.status().is_success()
-                || response.status() == StatusCode::PARTIAL_CONTENT)
-                && response
-                    .headers()
-                    .get(header::CONTENT_TYPE)
-                    .and_then(|value| value.to_str().ok())
-                    .is_none_or(|value| !value.to_ascii_lowercase().contains("json"))
-            {
-                upstream_url = official_url;
-                headers.push(("token".to_string(), session.token.clone()));
-            }
+fn external_tool_id_from_html(html: &str) -> Option<String> {
+    let document = Html::parse_document(html);
+    let selector = Selector::parse("a[href*='/external_tools/']").ok()?;
+    document.select(&selector).find_map(|link| {
+        let text = link.text().collect::<String>();
+        let href = link.value().attr("href")?;
+        if !text.contains("课堂视频") || text.contains("旧版") {
+            return None;
         }
-
-        let date = lesson.begin_time.get(..10).unwrap_or_default();
-        let suffix = lesson.video_id.chars().take(8).collect::<String>();
-        let extension = signed_url
-            .path_segments()
-            .and_then(|mut parts| parts.next_back())
-            .and_then(|name| name.rsplit_once('.').map(|(_, extension)| extension))
-            .filter(|extension| extension.len() <= 5)
-            .unwrap_or("mp4");
-        let filename = safe_filename(&format!(
-            "{}_{}_{}_{}.{}",
-            lesson.title,
-            date,
-            track_label(track.cdvi_view_num),
-            suffix,
-            extension
-        ));
-        Ok(ResolvedVideo {
-            upstream_url,
-            filename,
-            headers,
-        })
-    }
+        href.split("/external_tools/")
+            .nth(1)?
+            .split(['?', '/'])
+            .next()
+            .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+            .map(str::to_string)
+    })
 }
 
 async fn source_with_timeout<T>(
@@ -741,7 +445,7 @@ fn retryable_lti_unavailable(status: StatusCode, headers: &header::HeaderMap) ->
 
 fn lti_unavailable_error(retry_after_seconds: u64) -> AppError {
     AppError::upstream_unavailable(
-        "课堂视频 API 当前维护或过载，请稍后重试",
+        "课堂视频平台当前维护或过载，请稍后重试",
         retry_after_seconds,
     )
 }
@@ -764,19 +468,15 @@ fn find_form(
 
 const MAX_LTI_FORM_HOPS: usize = 4;
 
-enum LtiResolution {
-    TokenId(String),
-    Launch {
-        url: Url,
-        fields: HashMap<String, String>,
-    },
+/// The OIDC launch form (`id_token` + `state`) that ends the LTI login.
+struct LtiLaunch {
+    url: Url,
+    fields: HashMap<String, String>,
 }
 
 enum LtiFormStep {
-    Launch {
-        url: Url,
-        fields: HashMap<String, String>,
-    },
+    Launch(LtiLaunch),
+    /// An intermediate Canvas form (`/api/lti/authorize`) to submit first.
     Submit {
         url: Url,
         method: LtiFormMethod,
@@ -789,12 +489,14 @@ enum LtiFormMethod {
     Post,
 }
 
+/// Follows Canvas's LTI authorization pages after the OIDC initiation until
+/// they produce the launch form for the video platform.
 async fn resolve_lti_launch(
     service: &VideoService,
     client: &Client,
     config: &Config,
     mut response: reqwest::Response,
-) -> AppResult<LtiResolution> {
+) -> AppResult<LtiLaunch> {
     for _ in 0..MAX_LTI_FORM_HOPS {
         response = service.classify_video_response(response).await?;
         let status = response.status();
@@ -812,17 +514,9 @@ async fn resolve_lti_launch(
                 "课堂视频 LTI 鉴权返回 HTTP {status}"
             )));
         }
-        if let Some(token_id) = redirect_parameter(page_url.as_str(), "tokenId") {
-            return Ok(LtiResolution::TokenId(token_id));
-        }
         let html = response.text().await?;
-        if let Some(token_id) = token_id_from_html(&html) {
-            return Ok(LtiResolution::TokenId(token_id));
-        }
         match lti_form_step(&html, &page_url, config)? {
-            Some(LtiFormStep::Launch { url, fields }) => {
-                return Ok(LtiResolution::Launch { url, fields });
-            }
+            Some(LtiFormStep::Launch(launch)) => return Ok(launch),
             Some(LtiFormStep::Submit {
                 url,
                 method,
@@ -855,41 +549,19 @@ fn lti_form_step(html: &str, page_url: &Url, config: &Config) -> AppResult<Optio
         .map_err(|error| AppError::internal(anyhow::anyhow!(error.to_string())))?;
     let forms = document.select(&selector).collect::<Vec<_>>();
 
-    // Keep the verified SJTU endpoint as the strongest signal. Canvas may render
-    // unrelated OIDC-shaped forms before it, so this preference must span the
-    // whole document rather than depend on DOM order.
-    let mut known_launches = forms.iter().filter(|form| {
-        form.value()
-            .attr("action")
-            .is_some_and(action_path_is_lti3_auth)
-    });
-    if let Some(form) = known_launches.next() {
-        if known_launches.next().is_some() {
+    let mut launches = forms.iter().filter(|form| is_lti_launch_form(**form));
+    if let Some(form) = launches.next() {
+        if launches.next().is_some() {
             return Err(AppError::Upstream(
                 "课堂视频 LTI 鉴权页面包含多个授权表单".into(),
             ));
         }
         let action = form.value().attr("action").unwrap_or_default();
-        let url = resolve_video_form_action(page_url, &config.video_api, action)?;
-        return Ok(Some(LtiFormStep::Launch {
+        let url = resolve_video_form_action(page_url, &config.video_lti_adapter, action)?;
+        return Ok(Some(LtiFormStep::Launch(LtiLaunch {
             url,
             fields: form_inputs(*form),
-        }));
-    }
-
-    let mut semantic_launches = forms.iter().filter(|form| is_semantic_lti_launch(**form));
-    if let Some(form) = semantic_launches.next() {
-        if semantic_launches.next().is_some() {
-            return Err(AppError::Upstream(
-                "课堂视频 LTI 鉴权页面包含多个语义授权表单".into(),
-            ));
-        }
-        let action = form.value().attr("action").unwrap_or_default();
-        let url = resolve_video_form_action(page_url, &config.video_api, action)?;
-        return Ok(Some(LtiFormStep::Launch {
-            url,
-            fields: form_inputs(*form),
-        }));
+        })));
     }
 
     let canvas_origin = Url::parse(&config.canvas_origin)?;
@@ -924,22 +596,7 @@ fn lti_form_step(html: &str, page_url: &Url, config: &Config) -> AppResult<Optio
     Ok(None)
 }
 
-fn action_path_is_lti3_auth(action: &str) -> bool {
-    let path = Url::parse(action)
-        .ok()
-        .map(|url| url.path().to_string())
-        .unwrap_or_else(|| {
-            action
-                .split(['?', '#'])
-                .next()
-                .unwrap_or_default()
-                .to_string()
-        });
-    path.split('/')
-        .any(|segment| segment.eq_ignore_ascii_case("lti3auth"))
-}
-
-fn is_semantic_lti_launch(form: ElementRef<'_>) -> bool {
+fn is_lti_launch_form(form: ElementRef<'_>) -> bool {
     let method_is_post = form
         .value()
         .attr("method")
@@ -994,114 +651,6 @@ fn resolve_video_form_action(page_url: &Url, configured_api: &str, action: &str)
         .ok_or_else(|| AppError::Upstream("课堂视频授权表单跳转到了未配置的服务".into()))
 }
 
-async fn token_id_from_auth_response(response: reqwest::Response) -> AppResult<String> {
-    let status = response.status();
-    let response_url = response.url().clone();
-    if let Some(token_id) = response
-        .headers()
-        .get(header::LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|location| {
-            response_url
-                .join(location)
-                .ok()
-                .and_then(|url| redirect_parameter(url.as_str(), "tokenId"))
-                .or_else(|| token_id_from_candidate(location))
-        })
-        .or_else(|| redirect_parameter(response_url.as_str(), "tokenId"))
-    {
-        return Ok(token_id);
-    }
-    if !(status.is_success() || status.is_redirection()) {
-        return Err(AppError::Upstream(format!(
-            "视频平台授权返回 HTTP {status}"
-        )));
-    }
-    let html = response.text().await?;
-    token_id_from_html(&html)
-        .ok_or_else(|| AppError::Upstream("视频平台授权响应缺少 tokenId".into()))
-}
-
-fn token_id_from_html(html: &str) -> Option<String> {
-    let document = Html::parse_document(html);
-    if let Ok(selector) = Selector::parse("input[name]") {
-        for input in document.select(&selector) {
-            if input
-                .value()
-                .attr("name")
-                .is_some_and(|name| name.eq_ignore_ascii_case("tokenId"))
-                && let Some(token_id) = input.value().attr("value").and_then(valid_token_id)
-            {
-                return Some(token_id);
-            }
-        }
-    }
-    if let Ok(selector) = Selector::parse("[href], [src], [content], form[action]") {
-        for node in document.select(&selector) {
-            for attribute in ["href", "src", "content", "action"] {
-                if let Some(token_id) = node
-                    .value()
-                    .attr(attribute)
-                    .and_then(token_id_from_candidate)
-                {
-                    return Some(token_id);
-                }
-            }
-        }
-    }
-    token_id_from_candidate(html)
-}
-
-fn token_id_from_candidate(value: &str) -> Option<String> {
-    if let Some(token_id) = redirect_parameter(value, "tokenId") {
-        return valid_token_id(&token_id);
-    }
-    if let Some(start) = value.find("tokenId=") {
-        let encoded = value[start + "tokenId=".len()..]
-            .chars()
-            .take_while(|character| {
-                !matches!(
-                    character,
-                    '&' | '#' | '"' | '\'' | '<' | '>' | '\\' | ';' | ')' | '}'
-                ) && !character.is_whitespace()
-            })
-            .collect::<String>();
-        let query = format!("tokenId={encoded}");
-        if let Some((_, token_id)) =
-            url::form_urlencoded::parse(query.as_bytes()).find(|(key, _)| key == "tokenId")
-            && let Some(token_id) = valid_token_id(&token_id)
-        {
-            return Some(token_id);
-        }
-    }
-    for marker in [r#""tokenId":""#, r#""tokenId": ""#] {
-        if let Some(start) = value.find(marker) {
-            let token_id = value[start + marker.len()..]
-                .split('"')
-                .next()
-                .unwrap_or_default();
-            if let Some(token_id) = valid_token_id(token_id) {
-                return Some(token_id);
-            }
-        }
-    }
-    None
-}
-
-fn valid_token_id(value: &str) -> Option<String> {
-    (!value.is_empty()
-        && value.len() <= 4096
-        && !value.chars().any(|character| {
-            character.is_control()
-                || character.is_whitespace()
-                || matches!(
-                    character,
-                    '"' | '\'' | '<' | '>' | '{' | '}' | '$' | '\\' | ';'
-                )
-        }))
-    .then(|| value.to_string())
-}
-
 fn form_inputs(form: ElementRef<'_>) -> HashMap<String, String> {
     let Ok(selector) = Selector::parse("input[name]") else {
         return HashMap::new();
@@ -1127,6 +676,8 @@ fn absolute_action(base: &str, action: &str) -> AppResult<Url> {
     base.join(action).map_err(AppError::from)
 }
 
+/// `url` must be a public address on the configured service, at or below
+/// the service's path.
 fn validate_video_action(url: &Url, configured_api: &str) -> AppResult<()> {
     validate_generated_url(url)?;
     let configured = Url::parse(configured_api)?;
@@ -1156,6 +707,8 @@ fn same_origin(left: &Url, right: &Url) -> bool {
         && left.port_or_known_default() == right.port_or_known_default()
 }
 
+/// A query parameter of `value`, looked up in the query and in a query
+/// carried by the fragment (`#/route?key=value`, as single-page apps do).
 fn redirect_parameter(value: &str, key: &str) -> Option<String> {
     let url = Url::parse(value).ok()?;
     url.query_pairs()
@@ -1170,116 +723,7 @@ fn redirect_parameter(value: &str, key: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-fn extract_records(payload: &Value) -> Option<Vec<Value>> {
-    if let Some(array) = payload.as_array() {
-        return Some(array.clone());
-    }
-    for path in [
-        &["data", "records"][..],
-        &["data", "list"][..],
-        &["data", "rows"][..],
-        &["data", "items"][..],
-        &["data", "page", "records"][..],
-        &["data", "page", "list"][..],
-        &["body", "list"][..],
-        &["body"][..],
-        &["data"][..],
-    ] {
-        let mut node = payload;
-        let mut found = true;
-        for key in path {
-            let Some(next) = node.get(*key) else {
-                found = false;
-                break;
-            };
-            node = next;
-        }
-        if found && let Some(records) = node.as_array() {
-            return Some(records.clone());
-        }
-    }
-    None
-}
-
-fn course_id_candidates(course_id: &str, canvas_course_id: &str) -> Vec<String> {
-    let mut candidates = Vec::new();
-    for value in [canvas_course_id, course_id] {
-        let value = value.trim();
-        if value.is_empty() {
-            continue;
-        }
-        push_unique(&mut candidates, value.to_string());
-        if value.bytes().all(|byte| byte.is_ascii_digit()) {
-            let trimmed = value.trim_start_matches('0');
-            if !trimmed.is_empty() {
-                push_unique(&mut candidates, trimmed.to_string());
-            }
-        }
-        push_unique(&mut candidates, urlencoding::encode(value).into_owned());
-    }
-    candidates
-}
-
-fn push_unique(values: &mut Vec<String>, value: String) {
-    if !value.is_empty() && !values.contains(&value) {
-        values.push(value);
-    }
-}
-
-fn lesson_from_value(value: Value, index: usize) -> Option<Lesson> {
-    let video_id = value_id(&value, "videoId")?;
-    let string = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|key| value.get(*key).and_then(Value::as_str))
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    };
-    let audit_status = value
-        .get("videAuditStatus")
-        .and_then(|entry| entry.as_i64().or_else(|| entry.as_str()?.parse().ok()))
-        .unwrap_or_default();
-    Some(Lesson {
-        video_id,
-        title: {
-            let title = string(&["courseName", "videoName", "title"]);
-            if title.is_empty() {
-                format!("第 {:02} 讲", index + 1)
-            } else {
-                title
-            }
-        },
-        begin_time: string(&["courseBeginTime", "beginTime"]),
-        end_time: string(&["courseEndTime", "endTime"]),
-        classroom: string(&["classroomName", "classroom", "roomName"]),
-        audit_status,
-        available: audit_status == 3,
-        source: Some("canvas-lti".into()),
-    })
-}
-
-fn video_detail_from_payload(payload: Value) -> AppResult<VideoDetail> {
-    if payload.get("success").and_then(Value::as_bool) == Some(false) {
-        return Err(AppError::Upstream(
-            payload
-                .get("message")
-                .or_else(|| payload.get("msg"))
-                .and_then(Value::as_str)
-                .unwrap_or("视频服务拒绝请求")
-                .to_string(),
-        ));
-    }
-    for key in ["data", "body"] {
-        if let Some(node) = payload.get(key)
-            && let Ok(detail) = serde_json::from_value::<VideoDetail>(node.clone())
-            && !detail.video_play_response_vo_list.is_empty()
-        {
-            return Ok(detail);
-        }
-    }
-    Err(AppError::Upstream("视频详情没有返回可用分轨".into()))
-}
-
+/// The platform's view number for a track name the apps use.
 fn track_code(value: &str) -> AppResult<i64> {
     match value {
         "teacher" | "0" | "教师" => Ok(0),
@@ -1287,7 +731,7 @@ fn track_code(value: &str) -> AppResult<i64> {
         "student2" | "2" | "学生2" => Ok(2),
         "slides" | "ppt" | "3" | "PPT" => Ok(3),
         "composite" | "4" | "合成" => Ok(4),
-        _ => Err(AppError::BadRequest("未知的视频分轨".into())),
+        _ => Err(AppError::BadRequest("未知的视频画面".into())),
     }
 }
 
@@ -1323,125 +767,198 @@ mod tests {
     }
 
     #[test]
-    fn parses_token_from_fragment_route() {
-        let url = "https://v.sjtu.edu.cn/ui/#/ivsModules/index?tokenId=hello%2Bworld";
+    fn parses_parameters_from_fragment_routes() {
+        let url = "https://v.sjtu.edu.cn/jy-application-resourcemanage-ui/#/lms/launch?jwt_token=hello%2Bworld";
         assert_eq!(
-            redirect_parameter(url, "tokenId").as_deref(),
+            redirect_parameter(url, "jwt_token").as_deref(),
             Some("hello+world")
         );
+        assert_eq!(redirect_parameter(url, "other"), None);
     }
 
     #[test]
-    fn only_open_lessons_are_available() {
-        let lesson = lesson_from_value(
-            serde_json::json!({"videoId": "abc", "videAuditStatus": 3}),
-            0,
+    fn canvas_launch_page_yields_the_adapter_initiation_form() {
+        let html = r#"
+            <form action="https://oc.sjtu.edu.cn/other" method="post"><input name="x" value="1"></form>
+            <form action="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/oidc/login-initiation/canvas-record" method="post">
+              <input type="hidden" name="iss" value="https://canvas.instructure.com">
+              <input type="hidden" name="login_hint" value="hint">
+              <input type="hidden" name="target_link_uri" value="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record">
+            </form>
+        "#;
+        let (action, fields) = find_form(
+            html,
+            |action| action.contains(resource::INITIATION_PATH),
+            "missing",
         )
         .unwrap();
-        assert!(lesson.available);
-    }
-
-    #[test]
-    fn video_course_candidates_include_verified_encoded_form() {
-        let candidates = course_id_candidates("87954", "course-v1:SJTU+CS101/2026");
-        assert_eq!(
-            candidates,
-            vec![
-                "course-v1:SJTU+CS101/2026",
-                "course-v1%3ASJTU%2BCS101%2F2026",
-                "87954",
-            ]
+        assert!(action.ends_with(resource::INITIATION_PATH));
+        assert_eq!(fields["login_hint"], "hint");
+        assert!(
+            find_form(
+                r#"<form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/oidc/login_initiations"></form>"#,
+                |action| action.contains(resource::INITIATION_PATH),
+                "missing"
+            )
+            .is_err()
         );
     }
 
     #[test]
-    fn extracts_page_list_video_shape() {
-        let payload = serde_json::json!({"data": {"page": {"list": [{"videoId": "1"}]}}});
-        let records = extract_records(&payload).unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0]["videoId"], "1");
+    fn course_navigation_names_the_new_video_tool() {
+        let html = r#"
+            <a href="/courses/1/external_tools/1234">课堂视频旧版</a>
+            <a href="/courses/1/external_tools/9001?display=borderless">课堂视频</a>
+        "#;
+        assert_eq!(external_tool_id_from_html(html).as_deref(), Some("9001"));
+        assert_eq!(
+            external_tool_id_from_html(r#"<a href="/courses/1/external_tools/1234">课堂视频旧版</a>"#),
+            None
+        );
     }
 
     #[test]
-    fn recognizes_changed_lti_launch_action_by_oidc_fields() {
+    fn recognizes_the_adapter_launch_form_by_oidc_fields() {
         let config = lti_test_config();
         let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
         let html = r#"
-            <form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch/v2" method="post">
+            <form action="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record" method="post">
               <input type="hidden" name="id_token" value="jwt" />
               <input type="hidden" name="state" value="state" />
             </form>
         "#;
-        let Some(LtiFormStep::Launch { url, fields }) =
+        let Some(LtiFormStep::Launch(LtiLaunch { url, fields })) =
             lti_form_step(html, &page_url, &config).unwrap()
         else {
             panic!("expected launch form");
         };
         assert_eq!(
             url.as_str(),
-            "https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch/v2"
+            "https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record"
         );
         assert_eq!(fields.get("id_token").map(String::as_str), Some("jwt"));
     }
 
     #[test]
-    fn prioritizes_known_lti3_auth_path_for_error_form() {
+    fn relative_launch_action_keeps_the_adapter_prefix() {
         let config = lti_test_config();
         let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
         let html = r#"
-            <form action="/lti3/lti3Auth/ivs" method="post">
-              <input type="hidden" name="error" value="login_required" />
+            <form action="/lti/canvas/launch/canvas-record" method="post">
+              <input type="hidden" name="id_token" value="jwt" />
               <input type="hidden" name="state" value="state" />
             </form>
         "#;
-        let Some(LtiFormStep::Launch { url, .. }) =
+        let Some(LtiFormStep::Launch(LtiLaunch { url, .. })) =
             lti_form_step(html, &page_url, &config).unwrap()
         else {
             panic!("expected launch form");
         };
         assert_eq!(
             url.as_str(),
-            "https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/lti3Auth/ivs"
+            "https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record"
         );
-    }
-
-    #[test]
-    fn lti3_auth_path_wins_over_earlier_oidc_shaped_form() {
-        let config = lti_test_config();
-        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
-        let html = r#"
-            <form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/generic-launch" method="post">
-              <input type="hidden" name="id_token" value="wrong" />
-              <input type="hidden" name="state" value="wrong" />
-            </form>
-            <form action="/lti3/lti3Auth/ivs?source=canvas" method="post">
-              <input type="hidden" name="id_token" value="right" />
-              <input type="hidden" name="state" value="right" />
-            </form>
-        "#;
-        let Some(LtiFormStep::Launch { url, fields }) =
-            lti_form_step(html, &page_url, &config).unwrap()
-        else {
-            panic!("expected launch form");
-        };
-        assert_eq!(
-            url.as_str(),
-            "https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/lti3Auth/ivs?source=canvas"
-        );
-        assert_eq!(fields.get("id_token").map(String::as_str), Some("right"));
-    }
-
-    #[test]
-    fn relative_initiation_action_keeps_video_api_prefix() {
         let url = absolute_action(
-            "https://v.sjtu.edu.cn/jy-application-canvas-sjtu",
-            "oidc/login_initiations",
+            "https://v.sjtu.edu.cn/jy-lti-adapter",
+            "lti/canvas/oidc/login-initiation/canvas-record",
         )
         .unwrap();
         assert_eq!(
             url.as_str(),
-            "https://v.sjtu.edu.cn/jy-application-canvas-sjtu/oidc/login_initiations"
+            "https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/oidc/login-initiation/canvas-record"
         );
+    }
+
+    #[test]
+    fn follows_canvas_lti_auto_submit_retry_form() {
+        let config = lti_test_config();
+        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
+        let html = r#"
+            <form id="retry_login" action="/api/lti/authorize" method="get">
+              <input type="hidden" name="retried" value="true" />
+              <input type="hidden" name="client_id" value="8329" />
+            </form>
+        "#;
+        let Some(LtiFormStep::Submit {
+            url,
+            method,
+            fields,
+        }) = lti_form_step(html, &page_url, &config).unwrap()
+        else {
+            panic!("expected intermediate form");
+        };
+        assert!(matches!(method, LtiFormMethod::Get));
+        assert_eq!(url.as_str(), "https://oc.sjtu.edu.cn/api/lti/authorize");
+        assert_eq!(fields.get("retried").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn rejects_launch_forms_on_unconfigured_origins() {
+        let config = lti_test_config();
+        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
+        for action in [
+            "https://example.com/lti/canvas/launch/canvas-record",
+            "https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch",
+        ] {
+            let html = format!(
+                r#"<form action="{action}" method="post">
+                  <input type="hidden" name="id_token" value="jwt" />
+                  <input type="hidden" name="state" value="state" />
+                </form>"#
+            );
+            assert!(lti_form_step(&html, &page_url, &config).is_err());
+        }
+    }
+
+    #[test]
+    fn launch_form_requires_nonempty_hidden_fields_and_post() {
+        let config = lti_test_config();
+        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
+        for html in [
+            r#"<form action="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record" method="get">
+                  <input type="hidden" name="id_token" value="jwt" />
+                  <input type="hidden" name="state" value="state" />
+                </form>"#,
+            r#"<form action="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record" method="post">
+                  <input type="text" name="id_token" value="jwt" />
+                  <input type="hidden" name="state" value="state" />
+                </form>"#,
+            r#"<form action="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record" method="post">
+                  <input type="hidden" name="id_token" value="" />
+                  <input type="hidden" name="state" value="state" />
+                </form>"#,
+        ] {
+            assert!(lti_form_step(html, &page_url, &config).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn rejects_ambiguous_launch_forms() {
+        let config = lti_test_config();
+        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
+        let html = r#"
+            <form action="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record" method="post">
+              <input type="hidden" name="id_token" value="jwt-a" />
+              <input type="hidden" name="state" value="state-a" />
+            </form>
+            <form action="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/other" method="post">
+              <input type="hidden" name="id_token" value="jwt-b" />
+              <input type="hidden" name="state" value="state-b" />
+            </form>
+        "#;
+        assert!(lti_form_step(html, &page_url, &config).is_err());
+    }
+
+    #[test]
+    fn video_form_action_must_stay_under_configured_path() {
+        let configured = "https://v.sjtu.edu.cn/jy-lti-adapter";
+        let allowed =
+            Url::parse("https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record")
+                .unwrap();
+        let outside = Url::parse("https://v.sjtu.edu.cn/other-app/lti/canvas/launch").unwrap();
+        assert!(validate_video_action(&allowed, configured).is_ok());
+        assert!(validate_video_action(&outside, configured).is_err());
+        assert!(validate_video_action(&Url::parse("https://v.sjtu.edu.cn/jy-lti-adapter").unwrap(), configured).is_ok());
     }
 
     #[test]
@@ -1482,102 +999,11 @@ mod tests {
     }
 
     #[test]
-    fn follows_canvas_lti_auto_submit_retry_form() {
-        let config = lti_test_config();
-        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
-        let html = r#"
-            <form id="retry_login" action="/api/lti/authorize" method="get">
-              <input type="hidden" name="retried" value="true" />
-              <input type="hidden" name="client_id" value="8329" />
-            </form>
-        "#;
-        let Some(LtiFormStep::Submit {
-            url,
-            method,
-            fields,
-        }) = lti_form_step(html, &page_url, &config).unwrap()
-        else {
-            panic!("expected intermediate form");
-        };
-        assert!(matches!(method, LtiFormMethod::Get));
-        assert_eq!(url.as_str(), "https://oc.sjtu.edu.cn/api/lti/authorize");
-        assert_eq!(fields.get("retried").map(String::as_str), Some("true"));
-    }
-
-    #[test]
-    fn extracts_token_id_from_meta_refresh_or_inline_json() {
-        let meta = r#"<meta http-equiv="refresh" content="0;url=https://v.sjtu.edu.cn/ui/#/index?tokenId=hello%2Bworld">"#;
-        assert_eq!(token_id_from_html(meta).as_deref(), Some("hello+world"));
-        assert_eq!(
-            token_id_from_html(r#"<script>window.payload={"tokenId":"direct-token"}</script>"#)
-                .as_deref(),
-            Some("direct-token")
-        );
-        assert_eq!(
-            token_id_from_html(r#"<script>const next = `?tokenId=${token}`</script>"#),
-            None
-        );
-    }
-
-    #[test]
-    fn rejects_semantic_launch_form_on_unconfigured_origin() {
-        let config = lti_test_config();
-        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
-        let html = r#"
-            <form action="https://example.com/lti3/launch" method="post">
-              <input type="hidden" name="id_token" value="jwt" />
-              <input type="hidden" name="state" value="state" />
-            </form>
-        "#;
-        assert!(lti_form_step(html, &page_url, &config).is_err());
-    }
-
-    #[test]
-    fn semantic_launch_requires_nonempty_hidden_fields_and_post() {
-        let config = lti_test_config();
-        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
-        for html in [
-            r#"<form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch" method="get">
-                  <input type="hidden" name="id_token" value="jwt" />
-                  <input type="hidden" name="state" value="state" />
-                </form>"#,
-            r#"<form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch" method="post">
-                  <input type="text" name="id_token" value="jwt" />
-                  <input type="hidden" name="state" value="state" />
-                </form>"#,
-            r#"<form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch" method="post">
-                  <input type="hidden" name="id_token" value="" />
-                  <input type="hidden" name="state" value="state" />
-                </form>"#,
-        ] {
-            assert!(lti_form_step(html, &page_url, &config).unwrap().is_none());
-        }
-    }
-
-    #[test]
-    fn rejects_ambiguous_semantic_launch_forms() {
-        let config = lti_test_config();
-        let page_url = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
-        let html = r#"
-            <form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch-a" method="post">
-              <input type="hidden" name="id_token" value="jwt-a" />
-              <input type="hidden" name="state" value="state-a" />
-            </form>
-            <form action="https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch-b" method="post">
-              <input type="hidden" name="id_token" value="jwt-b" />
-              <input type="hidden" name="state" value="state-b" />
-            </form>
-        "#;
-        assert!(lti_form_step(html, &page_url, &config).is_err());
-    }
-
-    #[test]
-    fn video_form_action_must_stay_under_configured_path() {
-        let configured = "https://v.sjtu.edu.cn/jy-application-canvas-sjtu";
-        let allowed =
-            Url::parse("https://v.sjtu.edu.cn/jy-application-canvas-sjtu/lti3/launch").unwrap();
-        let outside = Url::parse("https://v.sjtu.edu.cn/other-app/lti3/launch").unwrap();
-        assert!(validate_video_action(&allowed, configured).is_ok());
-        assert!(validate_video_action(&outside, configured).is_err());
+    fn track_names_map_to_platform_view_codes() {
+        assert_eq!(track_code("teacher").unwrap(), 0);
+        assert_eq!(track_code("slides").unwrap(), 3);
+        assert_eq!(track_code("composite").unwrap(), 4);
+        assert!(track_code("audio").is_err());
+        assert_eq!(track_label(3), "PPT");
     }
 }

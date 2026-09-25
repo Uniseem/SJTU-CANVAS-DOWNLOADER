@@ -3,9 +3,11 @@
 //! retired canvas-sjtu API. JWTs stay server-side and are never download URLs.
 use std::collections::HashSet;
 
+use serde_json::Value;
+
 use super::*;
 
-const INITIATION_PATH: &str = "/lti/canvas/oidc/login-initiation/canvas-record";
+pub(super) const INITIATION_PATH: &str = "/lti/canvas/oidc/login-initiation/canvas-record";
 const LAUNCH_PATH: &str = "/lti/canvas/launch/canvas-record";
 const PAGE_SIZE: usize = 100;
 const MAX_PAGES: usize = 200;
@@ -25,15 +27,8 @@ impl VideoService {
             INITIATION_PATH,
         )?;
         let response = self.initiate_lti(client, &initiation_url, fields).await?;
-        // Reuse Canvas's cookie-fix / authorize form handling, with a separate
-        // allowlist. Never widen the legacy API's credential-posting boundary.
-        let mut adapter_config = (*self.config).clone();
-        adapter_config.video_api = self.config.video_lti_adapter.clone();
-        let LtiResolution::Launch { url, fields } =
-            resolve_lti_launch(self, client, &adapter_config, response).await?
-        else {
-            return Err(AppError::Upstream("新视频入口返回了旧版授权凭证".into()));
-        };
+        let LtiLaunch { url, fields } =
+            resolve_lti_launch(self, client, &self.config, response).await?;
         validate_adapter_action(&url, &self.config.video_lti_adapter, LAUNCH_PATH)?;
         let response = self
             .classify_video_response(no_redirect.post(url).form(&fields).send().await?)
@@ -45,8 +40,7 @@ impl VideoService {
         let class_id = teaching_class_id(&payload)?;
         Ok(VideoSession {
             token,
-            canvas_course_id: class_id,
-            protocol: VideoProtocol::Resource,
+            teaching_class_id: class_id,
         })
     }
 
@@ -102,7 +96,7 @@ impl VideoService {
                     &session.token,
                     "/v1/subject_vod_list_new",
                     &[
-                        ("teclIds", session.canvas_course_id.clone()),
+                        ("teclIds", session.teaching_class_id.clone()),
                         ("page.pageIndex", page.to_string()),
                         ("page.pageSize", PAGE_SIZE.to_string()),
                         ("page.orders[0].asc", "true".into()),
@@ -120,7 +114,7 @@ impl VideoService {
                 })?;
             for record in records {
                 if let Some(class_id) = value_id(record, "teclId")
-                    && class_id != session.canvas_course_id
+                    && class_id != session.teaching_class_id
                 {
                     return Err(AppError::Upstream(
                         "新视频平台返回了其他教学班的录像".into(),
@@ -317,7 +311,6 @@ fn resource_lesson(value: &Value, index: usize) -> AppResult<Lesson> {
         classroom: string(&["clroName"]),
         audit_status: status.unwrap_or_default(),
         available: ready && clickable,
-        source: Some("resource".into()),
     })
 }
 
@@ -362,10 +355,8 @@ fn resource_detail(data: &Value, lesson_id: &str) -> AppResult<VideoDetail> {
         };
         tracks.push(VideoTrack {
             id: format!("{lesson_id}-{view_num}"),
-            cdvi_view_num: code,
-            rtmp_url: url.into(),
-            rtmp_url_hd: String::new(),
-            rtmp_url_hdv: String::new(),
+            view: code,
+            url: url.into(),
         });
     }
     if tracks.is_empty() {
@@ -373,9 +364,7 @@ fn resource_detail(data: &Value, lesson_id: &str) -> AppResult<VideoDetail> {
             "新视频平台没有返回可用的教师、课件或合成分轨".into(),
         ));
     }
-    Ok(VideoDetail {
-        video_play_response_vo_list: tracks,
-    })
+    Ok(VideoDetail { tracks })
 }
 
 pub(super) fn resolve_resource_track(
@@ -383,11 +372,10 @@ pub(super) fn resolve_resource_track(
     track: &VideoTrack,
     config: &Config,
 ) -> AppResult<ResolvedVideo> {
-    let url = Url::parse(
-        track
-            .direct_url()
-            .ok_or_else(|| AppError::VideoUnavailable("该分轨没有下载地址".into()))?,
-    )?;
+    if track.url.trim().is_empty() {
+        return Err(AppError::VideoUnavailable("该画面没有下载地址".into()));
+    }
+    let url = Url::parse(track.url.trim())?;
     validate_generated_url(&url)?;
     let extension = url
         .path()
@@ -396,7 +384,7 @@ pub(super) fn resolve_resource_track(
         .unwrap_or_default()
         .to_ascii_lowercase();
     if !["mp4", "webm", "m4v", "flv", "mov", "mkv"].contains(&extension.as_str()) {
-        return Err(AppError::VideoUnavailable("该分轨只提供流式播放或未识别的媒体地址，目前无法直接下载；请从 Canvas 官网播放或使用官方“下载视频”功能".into()));
+        return Err(AppError::VideoUnavailable("该画面只提供流式播放或未识别的媒体地址，目前无法直接下载；请从 Canvas 官网播放或使用官方“下载视频”功能".into()));
     }
     // Never attach jwt-token to a CDN URL or expose the API authorization in a
     // browser URL. The school-provided signed media URL supports browser-first
@@ -405,7 +393,7 @@ pub(super) fn resolve_resource_track(
         "{}_{}_{}_{}.{}",
         lesson.title,
         lesson.begin_time.get(..10).unwrap_or_default(),
-        track_label(track.cdvi_view_num),
+        track_label(track.view),
         lesson.video_id,
         extension
     ));
@@ -423,8 +411,11 @@ pub(super) fn resolve_resource_track(
 mod tests {
     use super::*;
 
+    use crate::video::tests::lti_test_config;
+    use serde_json::json;
+
     #[tokio::test]
-    async fn launch_gateway_failures_allow_fallback_but_permission_denials_do_not() {
+    async fn launch_denials_are_permission_errors_and_gateway_failures_are_transient() {
         for status in [
             StatusCode::BAD_GATEWAY,
             StatusCode::SERVICE_UNAVAILABLE,
@@ -439,32 +430,30 @@ mod tests {
             let error = resource_token_from_response(response, &lti_test_config())
                 .await
                 .unwrap_err();
+            assert_eq!(error.is_transient(), status.is_server_error());
             assert_eq!(
-                historical::should_try_history(&Err(error)),
-                status.is_server_error()
+                matches!(error, AppError::VideoUnavailable(_)),
+                status.is_client_error()
             );
         }
     }
-    use crate::video::tests::lti_test_config;
-    use serde_json::json;
 
     #[test]
-    fn resource_launch_uses_separate_credential_boundary() {
-        let mut config = lti_test_config();
-        config.video_api = config.video_lti_adapter.clone();
+    fn resource_launch_form_is_validated_against_the_adapter() {
+        let config = lti_test_config();
         let page = Url::parse("https://oc.sjtu.edu.cn/api/lti/authorize").unwrap();
         let html = r#"<form method="post" action="https://v.sjtu.edu.cn/jy-lti-adapter/lti/canvas/launch/canvas-record">
           <input type="hidden" name="id_token" value="fixture-token">
           <input type="hidden" name="state" value="fixture-state">
         </form>"#;
-        let Some(LtiFormStep::Launch { url, fields }) =
+        let Some(LtiFormStep::Launch(LtiLaunch { url, fields })) =
             lti_form_step(html, &page, &config).unwrap()
         else {
             panic!("missing launch")
         };
         assert_eq!(fields["state"], "fixture-state");
         assert!(validate_adapter_action(&url, &config.video_lti_adapter, LAUNCH_PATH).is_ok());
-        assert!(validate_video_action(&url, &lti_test_config().video_api).is_err());
+        assert!(validate_video_action(&url, &config.resource_video_api).is_err());
         for target in [
             "https://evil.example/jy-lti-adapter/lti/canvas/launch/canvas-record",
             "https://v.sjtu.edu.cn/jy-lti-adapter-evil/lti/canvas/launch/canvas-record",
@@ -567,9 +556,9 @@ mod tests {
             {"viewNum":7,"url":"https://media.example/composite.mp4"}
         ]});
         let detail = resource_detail(&data, "123").unwrap();
-        let tracks = &detail.video_play_response_vo_list;
+        let tracks = &detail.tracks;
         assert_eq!(
-            tracks.iter().map(|t| t.cdvi_view_num).collect::<Vec<_>>(),
+            tracks.iter().map(|t| t.view).collect::<Vec<_>>(),
             vec![0, 3, 4]
         );
         let lesson = resource_lesson(&json!({"id":123}), 0).unwrap();
@@ -587,7 +576,7 @@ mod tests {
         assert!(resolve_resource_track(&lesson, &tracks[1], &lti_test_config()).is_err());
         assert!(resource_detail(&data, "456").is_err());
         let mut private_track = tracks[0].clone();
-        private_track.rtmp_url = "https://127.0.0.1/secret.mp4".into();
+        private_track.url = "https://127.0.0.1/secret.mp4".into();
         assert!(resolve_resource_track(&lesson, &private_track, &lti_test_config()).is_err());
     }
 
@@ -610,8 +599,7 @@ mod tests {
         let service = VideoService::new(Arc::new(config));
         let session = VideoSession {
             token: "fixture-token".into(),
-            canvas_course_id: "10".into(),
-            protocol: VideoProtocol::Resource,
+            teaching_class_id: "10".into(),
         };
         let result = service
             .resource_lessons(Arc::new(Jar::default()), &session)

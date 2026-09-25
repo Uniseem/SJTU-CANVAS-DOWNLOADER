@@ -56,11 +56,9 @@ pub struct Lesson {
     pub begin_time: String,
     pub end_time: String,
     pub classroom: String,
+    /// The platform's `vodDisplayStatus`; 3, 5 and 6 mean the recording is open.
     pub audit_status: i64,
     pub available: bool,
-    /// resource (2026-08 platform) | canvas-lti (former API) | historical (课堂视频旧版)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -83,32 +81,15 @@ pub struct LessonSizes {
     pub tracks: std::collections::BTreeMap<String, VideoTrackSize>,
 }
 
-/// One camera view as returned by the classroom-video services.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// One camera view of a recording, as the video platform lists it.
+#[derive(Clone, Debug, Serialize)]
 pub struct VideoTrack {
-    #[serde(default, deserialize_with = "deserialize_stringish")]
     pub id: String,
-    #[serde(default)]
-    pub cdvi_view_num: i64,
-    #[serde(default, alias = "rtmpUrlHdv")]
-    pub rtmp_url_hdv: String,
-    #[serde(default, alias = "rtmpUrlHd")]
-    pub rtmp_url_hd: String,
-    #[serde(default, alias = "rtmpUrl")]
-    pub rtmp_url: String,
-}
-
-impl VideoTrack {
-    pub fn direct_url(&self) -> Option<&str> {
-        [
-            self.rtmp_url_hdv.trim(),
-            self.rtmp_url_hd.trim(),
-            self.rtmp_url.trim(),
-        ]
-        .into_iter()
-        .find(|value| !value.is_empty())
-    }
+    /// 0 教师 | 1 学生1 | 2 学生2 | 3 PPT | 4 合成 (see `video::track_label`).
+    pub view: i64,
+    /// The signed media URL; only ever used by the engine.
+    #[serde(skip_serializing)]
+    pub url: String,
 }
 
 pub fn deserialize_stringish<'de, D>(deserializer: D) -> Result<String, D::Error>

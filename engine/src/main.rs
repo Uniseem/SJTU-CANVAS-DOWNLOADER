@@ -1,5 +1,5 @@
-//! SJTU Canvas Downloader engine: the shared core of the Windows and macOS
-//! apps. It signs in to Canvas through 交我办 QR codes, lists courses, lesson
+//! SJTU Canvas Downloader engine: the core of the desktop app (Electron, in
+//! apps/desktop). It signs in to Canvas through 交我办 QR codes, lists courses, lesson
 //! recordings and course files, and downloads them.
 //!
 //! The host app starts `sjtu-canvas-engine --data-dir <dir>` and talks

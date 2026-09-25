@@ -1,65 +1,38 @@
-# Third-party notices
+# 第三方组件
 
-SJTU Canvas Downloader's own source code is released under the MIT license in
-`LICENSE`. That license does not replace the licenses of the third-party
-software built into the desktop apps, listed below.
+SJTU Canvas Downloader 以 [MIT 许可证](LICENSE)发布。它使用了下列第三方组件，各自保留其许可证。
 
-SJTU Canvas Downloader is an independent, community-built project and is not
-affiliated with Shanghai Jiao Tong University, Instructure, or jAccount.
-Canvas is a trademark of Instructure, Inc. Other names and marks belong to
-their respective owners.
+## 桌面应用（apps/desktop）
 
-## Acknowledgements
+| 组件 | 许可证 | 用途 |
+| --- | --- | --- |
+| [Electron](https://www.electronjs.org/)（含 Chromium、Node.js） | MIT（Chromium 为 BSD 等许可证，见应用内 `LICENSES.chromium.html`） | 窗口与运行时 |
+| [React](https://react.dev/)、react-dom | MIT | 界面 |
+| [HeroUI](https://heroui.com/)（`@heroui/react`、`@heroui/styles`） | MIT | 界面组件与主题 |
+| [React Aria Components](https://react-spectrum.adobe.com/react-aria/) | Apache-2.0 | 无障碍交互（HeroUI 的基础） |
+| [Tailwind CSS](https://tailwindcss.com/) | MIT | 样式 |
+| [Lucide](https://lucide.dev/) | ISC | 图标 |
+| [Zustand](https://github.com/pmndrs/zustand) | MIT | 状态管理 |
+| [electron-vite](https://electron-vite.org/)、[Vite](https://vite.dev/)、[electron-builder](https://www.electron.build/)、TypeScript、Playwright | MIT / Apache-2.0 | 构建、打包与测试（不随应用分发） |
 
-The implementation was informed by these projects:
+完整的依赖清单见 `apps/desktop/package-lock.json`；打包后的应用在 `resources/app.asar` 中附带各包的许可证文件。
 
-- [FengYuchen1314/canvas-downloader](https://github.com/FengYuchen1314/canvas-downloader),
-  MIT license. Its documented jAccount QR login, Canvas LTI, video-list and
-  track-discovery behaviour informed the corresponding clean-room
-  implementation in the engine.
-- [Neko-Yukari/canvas-sjtu-skill](https://github.com/Neko-Yukari/canvas-sjtu-skill).
-  Its public documentation and the observable Canvas REST API behaviour
-  informed course and file browsing. That repository did not contain a
-  license when reviewed, so no source code was copied.
+## 下载引擎（engine）
 
-## Components of the engine
+引擎是一个 Rust 程序，静态链接了下列主要库（许可证均为 MIT 或 Apache-2.0 双许可，除特别说明）：
 
-The engine (`sjtu-canvas-engine`) is built from the Rust crates listed in
-`engine/Cargo.lock`; each keeps its own license:
+| 库 | 用途 |
+| --- | --- |
+| tokio、tokio-util、futures-util | 异步运行时 |
+| reqwest、tokio-tungstenite（Windows 上使用系统的 SChannel，其他平台使用 rustls 与 webpki-roots） | HTTP 与 WebSocket |
+| sqlx（SQLite） | 下载列表与设置的数据库 |
+| serde、serde_json | JSON-RPC 协议 |
+| scraper（及 html5ever、selectors，MPL-2.0） | 解析 Canvas 页面 |
+| chacha20poly1305、sha2、rand | 登录状态加密 |
+| chrono、url、uuid、base64、urlencoding、unicode-normalization、dashmap、anyhow、thiserror、tracing | 工具库 |
 
-- Most crates (Tokio, reqwest, hyper, SQLx, serde, chrono, url,
-  chacha20poly1305, tokio-tungstenite and others) are available under the MIT
-  and/or Apache 2.0 licenses.
-- SQLite is compiled into the engine through `libsqlite3-sys`; SQLite itself
-  is in the public domain.
-- `scraper` and `ego-tree` (ISC) parse the Canvas and LTI launch pages; they
-  use Servo's `selectors`, `cssparser`, `cssparser-macros` and `dtoa-short`,
-  which are under the Mozilla Public License 2.0. These MPL files are used
-  unmodified; their source is available from crates.io at the versions in
-  `engine/Cargo.lock`.
-- The ICU4X crates (`icu_*`, `zerovec`, `yoke`, `tinystr`, `writeable`,
-  `litemap` and related) are under the Unicode License v3.
-- `subtle`, `alloc-no-stdlib` and `alloc-stdlib` are under the BSD 3-Clause
-  license; `foldhash` and `zlib-rs` under the zlib license.
-- macOS builds use rustls with `rustls-webpki`/`untrusted` (ISC) and
-  `webpki-roots`, which carries Mozilla's CA certificate list
-  (CDLA-Permissive-2.0). Windows builds use the system TLS (SChannel) through
-  `native-tls` and link the Microsoft C runtime statically.
+完整清单及版本见 `engine/Cargo.lock`。
 
-The full list with versions can be produced with
-`cargo metadata --manifest-path engine/Cargo.toml --format-version 1`.
+## 参考
 
-## Desktop applications
-
-- Windows: .NET (MIT), Windows App SDK / WinUI 3 (MIT; the redistributed
-  runtime binaries are covered by the Windows App SDK license terms) and
-  CommunityToolkit.Mvvm (MIT). The app is published self-contained, so these
-  runtimes are included in the app folder.
-- macOS: the app uses only system frameworks (SwiftUI, AppKit, Security,
-  UserNotifications).
-
-## School services
-
-The apps talk to Canvas (`oc.sjtu.edu.cn`), jAccount and the classroom-video
-services over their web interfaces, with the user's own login. No
-school-provided software is bundled.
+扫码登录、LTI 与课堂视频的实现参考了 [canvas-downloader](https://github.com/FengYuchen1314/canvas-downloader)（MIT）公开的行为，课程与文件浏览参考了 [canvas-sjtu-skill](https://github.com/Neko-Yukari/canvas-sjtu-skill) 的公开文档。

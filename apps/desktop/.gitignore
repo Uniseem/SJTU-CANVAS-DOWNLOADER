@@ -1,0 +1,6 @@
+node_modules/
+out/
+dist/
+resources/engine/*
+!resources/engine/.gitkeep
+.tmp/

@@ -164,21 +164,18 @@ impl VideoService {
                 for kind in pending {
                     let value = match &detail {
                         Ok(detail) => match detail
-                            .video_play_response_vo_list
+                            .tracks
                             .iter()
-                            .find(|track| track.cdvi_view_num == track_code(&kind).unwrap_or(-1))
+                            .find(|track| track.view == track_code(&kind).unwrap_or(-1))
                         {
                             Some(track) => {
-                                // Use the same quality/URL selection as the real download.
+                                // Use the same URL selection as the real download.
                                 let probe = async {
-                                    let resolved = self
-                                        .resolve_video_url(
-                                            jar.clone(),
-                                            &cached.session,
-                                            lesson,
-                                            track,
-                                        )
-                                        .await?;
+                                    let resolved = resource::resolve_resource_track(
+                                        lesson,
+                                        track,
+                                        &self.config,
+                                    )?;
                                     probe_size(&client, &resolved).await
                                 };
                                 let size =
@@ -469,15 +466,13 @@ mod tests {
             classroom: String::new(),
             audit_status: 3,
             available: true,
-            source: Some("historical".into()),
         };
         service.cache.insert(
             ("owner".into(), "42".into()),
             CachedCourse {
                 session: VideoSession {
                     token: String::new(),
-                    canvas_course_id: "42".into(),
-                    protocol: VideoProtocol::Historical,
+                    teaching_class_id: "42".into(),
                 },
                 lessons: vec![lesson],
                 expires_at: Instant::now() + READY_TTL,
@@ -498,9 +493,7 @@ mod tests {
         service.detail_cache.insert(
             ("owner".into(), "42".into(), "lesson".into()),
             CachedDetail {
-                detail: VideoDetail {
-                    video_play_response_vo_list: vec![],
-                },
+                detail: VideoDetail { tracks: vec![] },
                 expires_at: Instant::now() + READY_TTL,
             },
         );

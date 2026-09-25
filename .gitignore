@@ -11,17 +11,10 @@ engine/target/
 __pycache__/
 *.pyc
 
-# Windows app
-apps/windows/**/bin/
-apps/windows/**/obj/
-apps/windows/**/AppPackages/
-apps/windows/**/*.user
-apps/windows/.vs/
-apps/windows/dist/
-
-# macOS app
-apps/macos/.build/
-apps/macos/.swiftpm/
-apps/macos/dist/
-apps/macos/**/*.xcodeproj/xcuserdata/
+# Desktop app (Electron)
+apps/desktop/node_modules/
+apps/desktop/out/
+apps/desktop/dist/
+apps/desktop/resources/engine/*
+!apps/desktop/resources/engine/.gitkeep
 .DS_Store

@@ -46,7 +46,6 @@ pub struct Config {
     pub session_path: PathBuf,
     pub canvas_origin: String,
     pub courses_origin: String,
-    pub video_api: String,
     pub video_lti_adapter: String,
     pub resource_video_api: String,
     pub jaccount_origin: String,
@@ -81,7 +80,6 @@ impl Config {
         let mut config = Self::school(data_root);
         config.canvas_origin = endpoint("SJTU_CANVAS_CANVAS_ORIGIN", &config.canvas_origin);
         config.courses_origin = endpoint("SJTU_CANVAS_COURSES_ORIGIN", &config.courses_origin);
-        config.video_api = endpoint("SJTU_CANVAS_VIDEO_API", &config.video_api);
         config.video_lti_adapter =
             endpoint("SJTU_CANVAS_VIDEO_LTI_ADAPTER", &config.video_lti_adapter);
         config.resource_video_api =
@@ -112,7 +110,6 @@ impl Config {
             data_root,
             canvas_origin: "https://oc.sjtu.edu.cn".into(),
             courses_origin: "https://courses.sjtu.edu.cn".into(),
-            video_api: "https://v.sjtu.edu.cn/jy-application-canvas-sjtu".into(),
             video_lti_adapter: "https://v.sjtu.edu.cn/jy-lti-adapter".into(),
             resource_video_api: "https://v.sjtu.edu.cn/jy-application-resourcemanage".into(),
             jaccount_origin: "https://jaccount.sjtu.edu.cn".into(),
@@ -150,7 +147,6 @@ impl Config {
         let mut origins = [
             &self.canvas_origin,
             &self.courses_origin,
-            &self.video_api,
             &self.video_lti_adapter,
             &self.resource_video_api,
             &self.jaccount_origin,
