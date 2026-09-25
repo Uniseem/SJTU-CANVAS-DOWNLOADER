@@ -41,9 +41,16 @@ function run(command, commandArgs, env = {}) {
   }
 }
 
+// CI exports the secrets even when they are unset (as empty strings); an
+// empty CSC_LINK would be taken for a certificate file.
+for (const name of ['CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID']) {
+  if (process.env[name] !== undefined && process.env[name].trim() === '') {
+    delete process.env[name];
+  }
+}
 const signed = Boolean(process.env.CSC_LINK);
 const notarize = signed && Boolean(process.env.APPLE_ID && process.env.APPLE_APP_SPECIFIC_PASSWORD && process.env.APPLE_TEAM_ID);
-const builderArgs = ['electron-builder', '--mac', 'dir', arch === 'arm64' ? '--arm64' : '--x64'];
+const builderArgs = ['electron-builder', '--mac', 'dir', arch === 'arm64' ? '--arm64' : '--x64', '--publish', 'never'];
 if (notarize) {
   builderArgs.push('--config.mac.notarize=true');
 }

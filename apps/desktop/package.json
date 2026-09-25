@@ -23,8 +23,8 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "build:engine": "node scripts/build-engine.mjs",
-    "pack": "npm run build && electron-builder --dir",
-    "dist:win": "npm run build && electron-builder --win --x64",
+    "pack": "npm run build && electron-builder --dir --publish never",
+    "dist:win": "npm run build && electron-builder --win --x64 --publish never",
     "dist:mac": "npm run build && node scripts/package-mac.mjs",
     "test:ui": "node tests/smoke.mjs"
   },
