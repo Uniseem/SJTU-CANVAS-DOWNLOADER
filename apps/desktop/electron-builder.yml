@@ -1,0 +1,60 @@
+# electron-builder configuration. The Rust engine is built separately by
+# `npm run build:engine`, which puts it into resources/engine/; it is shipped
+# next to the app as <resources>/engine/sjtu-canvas-engine[.exe].
+appId: io.github.uniseem.sjtu-canvas-downloader
+productName: SJTU Canvas Downloader
+copyright: Copyright © 2026 SJTU Canvas Downloader contributors
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+  - "!**/*.map"
+extraResources:
+  - from: resources/engine
+    to: engine
+    filter:
+      - "sjtu-canvas-engine*"
+asar: true
+compression: maximum
+npmRebuild: false
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: SJTUCanvasDownloader-win-${arch}-setup.${ext}
+  # Signing (optional): CSC_LINK (base64 .pfx) and CSC_KEY_PASSWORD.
+nsis:
+  # A per-user installer without administrator rights; the download list,
+  # settings and saved login stay in %LOCALAPPDATA%\SJTU Canvas Downloader.
+  oneClick: false
+  perMachine: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: SJTU Canvas Downloader
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  installerLanguages: [zh_CN, en_US]
+  language: "2052"
+
+mac:
+  # The zip is made by scripts/package-mac.mjs with ditto, which keeps the
+  # bundle's symlinks intact; install.sh installs it from Terminal.
+  target:
+    - target: dir
+  icon: build/icon.png
+  category: public.app-category.education
+  darkModeSupport: true
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+  extendInfo:
+    CFBundleDisplayName: SJTU Canvas Downloader
+    NSHumanReadableCopyright: Copyright © 2026 SJTU Canvas Downloader contributors

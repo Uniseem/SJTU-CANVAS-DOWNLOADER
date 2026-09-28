@@ -1,0 +1,20 @@
+# Local toolchains, caches and scratch data
+.dev/
+data/
+tmp/
+*.log
+
+# Engine
+engine/target/
+
+# Python caches (engine test helpers)
+__pycache__/
+*.pyc
+
+# Desktop app (Electron)
+apps/desktop/node_modules/
+apps/desktop/out/
+apps/desktop/dist/
+apps/desktop/resources/engine/*
+!apps/desktop/resources/engine/.gitkeep
+.DS_Store

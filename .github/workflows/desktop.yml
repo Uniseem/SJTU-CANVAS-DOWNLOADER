@@ -1,0 +1,243 @@
+name: Desktop app
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub Release for the version in apps/desktop/package.json (creates the tag)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+# Signing is optional. Without these secrets the macOS app is signed ad hoc
+# (installed from Terminal with install.sh) and the Windows installer is
+# unsigned (SmartScreen shows "more info → run anyway").
+#   macOS:   MACOS_CERTIFICATE_P12 (base64 of a .p12 with a Developer ID
+#            Application certificate), MACOS_CERTIFICATE_PASSWORD, and for
+#            notarization APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID
+#   Windows: WINDOWS_CERTIFICATE_PFX (base64), WINDOWS_CERTIFICATE_PASSWORD
+#
+# A pushed tag vX.Y.Z (matching apps/desktop/package.json and engine/Cargo.toml)
+# publishes a GitHub Release with the installers and SHA256SUMS.txt. Running
+# the workflow by hand with "release" ticked does the same for the version in
+# package.json and creates the tag itself.
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+            builder-arch: arm64
+          - arch: x86_64
+            runner: macos-15-intel
+            builder-arch: x64
+    steps:
+      - uses: actions/checkout@v4
+      # Only export the signing secrets that exist: an empty CSC_LINK would be
+      # taken for a certificate file by electron-builder.
+      - name: Signing secrets
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$MACOS_CERTIFICATE_P12" ]; then
+            echo "CSC_LINK=$MACOS_CERTIFICATE_P12" >> "$GITHUB_ENV"
+            echo "CSC_KEY_PASSWORD=$MACOS_CERTIFICATE_PASSWORD" >> "$GITHUB_ENV"
+            if [ -n "$APPLE_ID" ]; then
+              echo "APPLE_ID=$APPLE_ID" >> "$GITHUB_ENV"
+              echo "APPLE_APP_SPECIFIC_PASSWORD=$APPLE_APP_PASSWORD" >> "$GITHUB_ENV"
+              echo "APPLE_TEAM_ID=$APPLE_TEAM_ID" >> "$GITHUB_ENV"
+            fi
+          else
+            echo "No macOS certificate: the app will be signed ad hoc"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+          key: ${{ matrix.arch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Engine tests
+        if: matrix.arch == 'arm64'
+        run: cargo test --locked --manifest-path engine/Cargo.toml
+      - name: Install dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Type check
+        if: matrix.arch == 'arm64'
+        working-directory: apps/desktop
+        run: npm run typecheck
+      - name: Build the engine
+        working-directory: apps/desktop
+        run: npm run build:engine
+      - name: Build SJTU Canvas Downloader.app
+        working-directory: apps/desktop
+        run: npm run build && node scripts/package-mac.mjs --arch ${{ matrix.builder-arch }}
+      - name: Smoke test against the demo school
+        if: matrix.arch == 'arm64'
+        working-directory: apps/desktop
+        run: |
+          cargo build --locked --manifest-path ../../engine/Cargo.toml
+          npm run test:ui
+      - name: Install with install.sh and start the app
+        run: |
+          SJTU_CANVAS_PACKAGE="apps/desktop/dist/SJTUCanvasDownloader-macos-${{ matrix.arch }}.zip" bash install.sh
+          app="/Applications/SJTU Canvas Downloader.app"
+          [ -d "$app" ] || app="$HOME/Applications/SJTU Canvas Downloader.app"
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/Resources/engine/sjtu-canvas-engine" --version
+          # install.sh opened the app; it starts its engine, so both must be running.
+          for _ in $(seq 1 60); do
+            if pgrep -x sjtu-canvas-engine >/dev/null; then break; fi
+            sleep 1
+          done
+          pgrep -f "SJTU Canvas Downloader.app/Contents/MacOS/"
+          pgrep -x sjtu-canvas-engine
+          osascript -e 'quit app "SJTU Canvas Downloader"' || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SJTUCanvasDownloader-macos-${{ matrix.arch }}
+          path: apps/desktop/dist/SJTUCanvasDownloader-macos-${{ matrix.arch }}.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.arch == 'arm64'
+        with:
+          name: smoke-screenshots-macos
+          path: apps/desktop/dist/smoke
+          if-no-files-found: ignore
+
+  windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Signing secrets
+        shell: bash
+        env:
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -n "$WINDOWS_CERTIFICATE_PFX" ]; then
+            echo "CSC_LINK=$WINDOWS_CERTIFICATE_PFX" >> "$GITHUB_ENV"
+            echo "CSC_KEY_PASSWORD=$WINDOWS_CERTIFICATE_PASSWORD" >> "$GITHUB_ENV"
+          else
+            echo "No Windows certificate: the installer will be unsigned"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Engine tests
+        run: cargo test --locked --manifest-path engine/Cargo.toml
+      - name: Install dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Type check
+        working-directory: apps/desktop
+        run: npm run typecheck
+      - name: Build the engine
+        working-directory: apps/desktop
+        run: npm run build:engine
+      - name: Build the installer
+        working-directory: apps/desktop
+        run: npm run dist:win
+      - name: Smoke test against the demo school
+        working-directory: apps/desktop
+        run: |
+          cargo build --locked --manifest-path ../../engine/Cargo.toml
+          npm run test:ui
+      - name: Install silently and uninstall
+        shell: pwsh
+        run: |
+          $setup = Resolve-Path "apps/desktop/dist/SJTUCanvasDownloader-win-x64-setup.exe"
+          $dir = Join-Path $env:RUNNER_TEMP "installed"
+          # NSIS: /S is silent, /D= must be last and unquoted.
+          Start-Process $setup -ArgumentList "/S", "/D=$dir" -Wait
+          foreach ($file in "SJTU Canvas Downloader.exe", "resources\engine\sjtu-canvas-engine.exe", "Uninstall SJTU Canvas Downloader.exe") {
+            if (-not (Test-Path (Join-Path $dir $file))) { throw "missing after install: $file" }
+          }
+          & (Join-Path $dir "resources\engine\sjtu-canvas-engine.exe") --version
+          Start-Process (Join-Path $dir "Uninstall SJTU Canvas Downloader.exe") -ArgumentList "/S", "_?=$dir" -Wait
+          Start-Sleep -Seconds 3
+          if (Test-Path (Join-Path $dir "SJTU Canvas Downloader.exe")) { throw "the uninstaller left the app behind" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SJTUCanvasDownloader-win-x64
+          path: apps/desktop/dist/SJTUCanvasDownloader-win-x64-setup.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-screenshots-windows
+          path: apps/desktop/dist/smoke
+          if-no-files-found: ignore
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the version
+        run: |
+          engine="$(sed -n 's/^version = "\(.*\)"$/\1/p' engine/Cargo.toml | head -n 1)"
+          app="$(node -p "require('./apps/desktop/package.json').version")"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v$app"
+          fi
+          echo "tag $tag, engine $engine, app $app"
+          [ "${tag#v}" = "$engine" ] && [ "${tag#v}" = "$app" ]
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SJTUCanvasDownloader-*
+          path: artifacts
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd artifacts
+          ls -la
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          # --target creates the tag at this commit when it does not exist yet.
+          gh release create "$RELEASE_TAG" * --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "SJTU Canvas Downloader ${RELEASE_TAG#v}" --notes-file ../.github/release-notes.md
