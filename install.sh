@@ -11,6 +11,9 @@
 # gets. Running the script again updates the app; downloads and settings are
 # kept. SJTU_CANVAS_PACKAGE=<file.zip> installs a local build instead.
 set -euo pipefail
+# Write ${var} when Chinese text follows a variable: in a UTF-8 locale the
+# bash 3.2 that ships with macOS reads a byte such as the first byte of "）"
+# as part of the name, and set -u then stops with "unbound variable".
 
 REPO="Uniseem/SJTU-CANVAS-DOWNLOADER"
 APP="SJTU Canvas Downloader.app"
@@ -23,7 +26,7 @@ fail() {
 
 [ "$(uname -s)" = "Darwin" ] || fail "这个脚本只用于 macOS。Windows 请从 https://github.com/$REPO/releases 下载安装程序。"
 version="$(sw_vers -productVersion)"
-[ "${version%%.*}" -ge 12 ] || fail "需要 macOS 12 或更新版本，这台 Mac 是 $version。"
+[ "${version%%.*}" -ge 12 ] || fail "需要 macOS 12 或更新版本，这台 Mac 是 ${version}。"
 
 # Set on Apple silicon even when this shell runs under Rosetta.
 if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = "1" ]; then
@@ -37,7 +40,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 if [ -n "${SJTU_CANVAS_PACKAGE:-}" ]; then
-  [ -f "$SJTU_CANVAS_PACKAGE" ] || fail "找不到 $SJTU_CANVAS_PACKAGE。"
+  [ -f "$SJTU_CANVAS_PACKAGE" ] || fail "找不到 ${SJTU_CANVAS_PACKAGE}。"
   echo "==> 使用本地安装包 $SJTU_CANVAS_PACKAGE"
   cp "$SJTU_CANVAS_PACKAGE" "$work/$package"
 else
@@ -46,13 +49,13 @@ else
   else
     base="https://github.com/$REPO/releases/latest/download"
   fi
-  echo "==> 下载 SJTU Canvas Downloader（$arch）"
+  echo "==> 下载 SJTU Canvas Downloader（${arch}）"
   curl -fL --retry 3 --progress-bar -o "$work/$package" "$base/$package" ||
-    fail "无法下载安装包。请检查网络，或从 https://github.com/$REPO/releases 手动下载 $package。"
+    fail "无法下载安装包。请检查网络，或从 https://github.com/$REPO/releases 手动下载 ${package}。"
   curl -fsSL --retry 3 -o "$work/SHA256SUMS.txt" "$base/SHA256SUMS.txt" || fail "无法下载校验文件 SHA256SUMS.txt。"
   expected="$(awk -v name="$package" '$2 == name || $2 == "*" name { print $1 }' "$work/SHA256SUMS.txt")"
   actual="$(shasum -a 256 "$work/$package" | awk '{ print $1 }')"
-  [ -n "$expected" ] || fail "SHA256SUMS.txt 中没有 $package。"
+  [ -n "$expected" ] || fail "SHA256SUMS.txt 中没有 ${package}。"
   [ "$expected" = "$actual" ] || fail "安装包校验失败（SHA-256 不一致），请重新运行。"
   echo "==> 校验通过"
 fi
@@ -60,7 +63,7 @@ fi
 echo "==> 解压"
 mkdir -p "$work/extract"
 ditto -x -k "$work/$package" "$work/extract" || fail "安装包无法解压。"
-[ -d "$work/extract/$APP" ] || fail "安装包里没有 $APP。"
+[ -d "$work/extract/$APP" ] || fail "安装包里没有 ${APP}。"
 
 # A running copy is asked to quit; it stops its downloads cleanly and they
 # resume when the new version starts.
@@ -89,7 +92,7 @@ fi
 
 echo "==> 安装到 $destination"
 $sudo_prefix rm -rf "$destination/$APP"
-$sudo_prefix ditto "$work/extract/$APP" "$destination/$APP" || fail "无法复制到 $destination。"
+$sudo_prefix ditto "$work/extract/$APP" "$destination/$APP" || fail "无法复制到 ${destination}。"
 # Nothing here is a browser download, so no quarantine flag is expected; remove
 # any that a manual download may have left, so Gatekeeper does not block it.
 $sudo_prefix xattr -dr com.apple.quarantine "$destination/$APP" 2>/dev/null || true
